@@ -32,8 +32,13 @@ ARM_LEN = 150.0  # length of each corridor arm
 BOX_L = 60.0     # box footprint, long side
 BOX_W = 42.0     # box footprint, short side
 
-HUMAN_R = 20.0                       # carrier body capsule radius (CLAUDE.md: 0.2m)
-HUMAN_OFFSET = BOX_L / 2 + HUMAN_R * 0.6   # circle center, trailing behind box rear edge
+HUMAN_R = 20.0     # carrier body capsule radius (CLAUDE.md: 0.2m)
+# Arm reach from the grip point to where the carrier's body center sits.
+# Not yet measured in Phase 0 -- placeholder pending a real value, chosen
+# to be the same order of magnitude as the box and corridor.
+CARRY_ARM = 35.0
+# Lateral stances the carrier may take relative to the box centerline.
+SIDE_OFFSETS = (-15.0, -7.5, 0.0, 7.5, 15.0)
 
 START = (ARM_LEN - 40.0, W1 / 2, 0.0)
 GOAL = (W2 / 2, ARM_LEN - 40.0, np.pi / 2)
@@ -106,23 +111,66 @@ def box_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
     return shape_clearance(box_sample_points(x, y, theta), w1, w2, arm_len)
 
 
-def human_circle_center(x, y, theta):
-    local = np.array([-HUMAN_OFFSET, 0.0])
-    return rot(theta) @ local + np.array([x, y])
+def circle_boundary_points(center, radius=HUMAN_R, n=16):
+    cx, cy = center
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    return [(cx + radius * np.cos(a), cy + radius * np.sin(a)) for a in angles]
 
 
-def collision_free(x, y, theta, with_human):
-    pts = box_sample_points(x, y, theta)
-    if not all(in_free_space(px, py) for px, py in pts):
-        return False
+def place_humans(x, y, theta, side_offset):
+    """Front and back carrier positions for a given lateral stance.
+
+    Two grip points at the box's ends, each extended outward by CARRY_ARM
+    along the box's long axis, with a shared lateral shift (side_offset)
+    perpendicular to it -- this is CLAUDE.md's carriable(q, h) oracle,
+    where h ranges over SIDE_OFFSETS.
+    """
+    d = np.array([np.cos(theta), np.sin(theta)])
+    n = np.array([-d[1], d[0]])
+    c = np.array([x, y])
+    hl = BOX_L / 2
+    grip_front = c + d * hl
+    grip_back = c - d * hl
+    h_front = grip_front + d * CARRY_ARM + n * side_offset
+    h_back = grip_back - d * CARRY_ARM + n * side_offset
+    return tuple(h_front), tuple(h_back)
+
+
+def carriable_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
+    """Best clearance achievable over all allowed carrier stances (cm).
+
+    Returns (clearance_cm, best_side_offset). best_side_offset is None if
+    the box itself does not fit (carrier placement is then moot).
+    """
+    bc = box_clearance(x, y, theta, w1, w2, arm_len)
+    if bc < 0:
+        return bc, None
+    best = -np.inf
+    best_offset = None
+    for off in SIDE_OFFSETS:
+        h_front, h_back = place_humans(x, y, theta, off)
+        c1 = shape_clearance(circle_boundary_points(h_front), w1, w2, arm_len)
+        c2 = shape_clearance(circle_boundary_points(h_back), w1, w2, arm_len)
+        cand = min(bc, c1, c2)
+        if cand > best:
+            best = cand
+            best_offset = off
+    return best, best_offset
+
+
+def best_human_positions(x, y, theta):
+    """Carrier capsule centers (front, back) at the best offset, for drawing."""
+    _, offset = carriable_clearance(x, y, theta)
+    if offset is None:
+        offset = 0.0
+    return place_humans(x, y, theta, offset)
+
+
+def collision_free(x, y, theta, with_human, w1=None, w2=None, arm_len=None):
     if with_human:
-        cx, cy = human_circle_center(x, y, theta)
-        angles = np.linspace(0, 2 * np.pi, 12, endpoint=False)
-        circle_pts = [(cx + HUMAN_R * np.cos(a), cy + HUMAN_R * np.sin(a)) for a in angles]
-        circle_pts.append((cx, cy))
-        if not all(in_free_space(px, py) for px, py in circle_pts):
-            return False
-    return True
+        clearance, _ = carriable_clearance(x, y, theta, w1, w2, arm_len)
+        return clearance >= 0
+    return box_clearance(x, y, theta, w1, w2, arm_len) >= 0
 
 
 def angle_wrap(a):
@@ -234,9 +282,11 @@ def draw_box(ax, x, y, theta, color='tab:blue', alpha=0.5, lw=1.0):
     ax.add_patch(patches.Polygon(corners, closed=True, facecolor=color, edgecolor='k', alpha=alpha, linewidth=lw, zorder=2))
 
 
-def draw_human(ax, x, y, theta, color='tab:red', alpha=0.4):
-    cx, cy = human_circle_center(x, y, theta)
-    ax.add_patch(patches.Circle((cx, cy), HUMAN_R, facecolor=color, edgecolor='k', alpha=alpha, zorder=1))
+def draw_carriers(ax, x, y, theta, color='tab:red', alpha=0.4):
+    """Both carrier capsules at the best side offset for this pose."""
+    h_front, h_back = best_human_positions(x, y, theta)
+    for c in (h_front, h_back):
+        ax.add_patch(patches.Circle(c, HUMAN_R, facecolor=color, edgecolor='k', alpha=alpha, zorder=1))
 
 
 def run_case(ax, with_human, label):
@@ -249,18 +299,18 @@ def run_case(ax, with_human, label):
         for s in path[::step]:
             draw_box(ax, *s, alpha=0.15)
             if with_human:
-                draw_human(ax, *s, alpha=0.10)
+                draw_carriers(ax, *s, alpha=0.10)
         draw_box(ax, *path[0], color='tab:green', alpha=0.9)
         draw_box(ax, *path[-1], color='tab:blue', alpha=0.9)
         if with_human:
-            draw_human(ax, *path[0], color='tab:green', alpha=0.5)
-            draw_human(ax, *path[-1], color='tab:blue', alpha=0.5)
+            draw_carriers(ax, *path[0], color='tab:green', alpha=0.5)
+            draw_carriers(ax, *path[-1], color='tab:blue', alpha=0.5)
     else:
         draw_box(ax, *START, color='tab:green', alpha=0.9)
         draw_box(ax, *GOAL, color='tab:blue', alpha=0.4)
         if with_human:
-            draw_human(ax, *START, color='tab:green', alpha=0.5)
-            draw_human(ax, *GOAL, color='tab:blue', alpha=0.3)
+            draw_carriers(ax, *START, color='tab:green', alpha=0.5)
+            draw_carriers(ax, *GOAL, color='tab:blue', alpha=0.3)
     return found
 
 
