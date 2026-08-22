@@ -23,6 +23,12 @@ import phase1_demo as m
 
 
 def interpolate_path(path, sub_steps=4):
+    """Turn a coarse grid_bfs path (one point per grid cell, so it can
+    visibly "jump" between frames) into a smooth one by linearly
+    interpolating position and angle between each consecutive pair of
+    states, sub_steps times. angle_wrap keeps the rotation from taking
+    the "long way around" through the -pi/+pi seam.
+    """
     dense = [path[0]]
     for a, b in zip(path[:-1], path[1:]):
         for i in range(1, sub_steps + 1):
@@ -45,6 +51,16 @@ def draw_carrier(ax, x, y, theta, color='tab:orange', alpha=0.5, num_carriers=No
 
 
 def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20, num_carriers=None):
+    """Render the two-panel comparison GIF and save it to out_path.
+
+    Left panel: the box-only path (always reaches the goal here -- see
+    the module docstring for why this is the "easy" case).
+    Right panel: the carrier oracle's best-effort path, which stops at
+    whatever pose was closest to the goal before the search ran out of
+    unblocked neighbors (a real dead end, not scripted). Both panels
+    freeze on their last frame for hold_frames extra frames at the end
+    so the final PASS/BLOCKED state is easy to read before the GIF loops.
+    """
     path_box, _, _, _, _ = m.grid_bfs(m.START, m.GOAL, with_human=False)
     assert path_box is not None, "box-only path must exist"
 
@@ -56,13 +72,16 @@ def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20, n
     dense_box = interpolate_path(path_box, sub_steps=sub_steps)
     dense_carrier = interpolate_path(best_path, sub_steps=sub_steps)
     n_box, n_carrier = len(dense_box), len(dense_carrier)
+    # The two paths are different lengths (one reaches the goal, one
+    # doesn't) and are shown on independent clocks: each panel just holds
+    # its last frame once it runs out, rather than looping or resetting.
     total_frames = max(n_box, n_carrier) + hold_frames
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
 
     def render(frame_i):
         for ax in axes:
-            ax.clear()
+            ax.clear()  # matplotlib has no built-in "redraw at frame N"; easiest is full redraw
 
         left_i = min(frame_i, n_box - 1)
         left_done = frame_i >= n_box - 1
