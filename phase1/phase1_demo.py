@@ -354,14 +354,14 @@ def run_case(ax, with_human, label):
         if with_human:
             draw_carriers(ax, *START, color='tab:green', alpha=0.5)
             draw_carriers(ax, *GOAL, color='tab:blue', alpha=0.3)
-    return found
+    return found, path
 
 
 if __name__ == "__main__":
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
 
-    found1 = run_case(axes[0], with_human=False, label="Box only")
-    found2 = run_case(axes[1], with_human=True, label="Box + carrier")
+    found1, path1 = run_case(axes[0], with_human=False, label="Box only")
+    found2, path2 = run_case(axes[1], with_human=True, label="Box + carrier")
 
     fig.suptitle("Odoriba Phase 1: L-corridor, box vs box+human "
                   f"(corridor {W1:.0f}x{W2:.0f}cm, box {BOX_L:.0f}x{BOX_W:.0f}cm, "
@@ -369,7 +369,23 @@ if __name__ == "__main__":
     fig.tight_layout()
     out_path = "phase1_demo.png"
     fig.savefig(out_path, dpi=150)
-    print(f"box only:    {'PASS' if found1 else 'BLOCKED'}")
-    print(f"box+carrier: {'PASS' if found2 else 'BLOCKED'}")
+
+    print(f"box only:    {'PASS' if found1 else 'BLOCKED'}"
+          + (f" (min clearance {path_min_clearance(path1, False):.1f}cm)" if found1 else ""))
+    print(f"box+carrier: {'PASS' if found2 else 'BLOCKED'}"
+          + (f" (min clearance {path_min_clearance(path2, True):.1f}cm)" if found2 else ""))
     print(f"saved figure to {out_path}")
+
+    print("\nsearching for the critical corridor width (box passes, carrier blocked)...")
+    w, results = find_critical_width()
+    if w is not None:
+        print(f"廊下幅 {w:.1f}cm / 箱 {BOX_L:.0f}x{BOX_W:.0f}cm / 人 r={HUMAN_R:.0f}cm, arm={CARRY_ARM:.0f}cm")
+        print("  自由剛体  : 通る")
+        print("  人あり    : 通らない")
+    else:
+        print("no width in the search range separated the two cases; see `results` for the raw sweep")
+    for w_, ok_free, ok_human in results:
+        print(f"  w={w_:5.1f}cm  box_only={'PASS' if ok_free else 'BLOCK'}  "
+              f"with_carrier={'PASS' if ok_human else 'BLOCK'}")
+
     plt.show()
