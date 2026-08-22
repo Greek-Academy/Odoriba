@@ -8,8 +8,23 @@ Real measurements from Phase 0 (2026-08-15):
 
 This script builds a simple 2D (x, y, theta) grid planner (BFS over a
 discretized state space) and shows the box can find a path through the
-L-corridor alone, but cannot once a circle representing the carrier's body
-is attached to it.
+L-corridor alone, but cannot once a carrier's body is attached to it.
+
+How to read this file, top to bottom:
+  1. Parameters (cm) -- the numbers that define the scenario.
+  2. Geometry helpers -- "is this point/shape inside the corridor, and by
+     how many cm" (the clearance / signed-distance machinery).
+  3. The carriability oracle -- place_humans / carriable_clearance: given
+     a box pose, is there some way for the carrier(s) to stand next to it
+     without hitting a wall, and what's the tightest clearance?
+  4. The planner -- a brute-force grid search (see the comment above DX
+     below for why BFS-over-a-grid instead of RRT).
+  5. Drawing + __main__ -- renders both cases side by side and prints the
+     numeric result (PASS/BLOCKED + clearance in cm).
+
+Run it directly to see the demo:
+    python phase1_demo.py --carriers 2   # (default) one person per end
+    python phase1_demo.py --carriers 1   # one person, trailing behind
 """
 
 import numpy as np
@@ -58,6 +73,16 @@ GOAL = (W2 / 2, ARM_LEN - END_MARGIN, np.pi / 2)
 
 
 def in_free_space(x, y, w1=None, w2=None, arm_len=None):
+    """True if (x, y) is inside the L-corridor.
+
+    The corridor is just the union of two overlapping rectangles: a
+    horizontal arm (full length in x, width w1 in y) and a vertical arm
+    (width w2 in x, full length in y). Every w1/w2/arm_len parameter in
+    this file defaults to the module-level W1/W2/ARM_LEN when left as
+    None -- that's what lets find_critical_width() below try other
+    corridor widths without threading a width argument through every
+    single call site.
+    """
     w1 = W1 if w1 is None else w1
     w2 = W2 if w2 is None else w2
     arm_len = ARM_LEN if arm_len is None else arm_len
@@ -65,9 +90,17 @@ def in_free_space(x, y, w1=None, w2=None, arm_len=None):
 
 
 def _point_seg_dist(px, py, ax, ay, bx, by):
+    """Shortest distance from point (px, py) to the segment (a, b).
+
+    Standard "project onto the line, then clamp to the segment" trick:
+    t is where the projection of p lands on the infinite line through a
+    and b, as a fraction of the way from a to b. Clamping t to [0, 1]
+    keeps the closest point on the segment itself instead of the line
+    extending past its ends.
+    """
     dx, dy = bx - ax, by - ay
     if dx == 0 and dy == 0:
-        return float(np.hypot(px - ax, py - ay))
+        return float(np.hypot(px - ax, py - ay))  # a == b: segment is a point
     t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
     t = min(1.0, max(0.0, t))
     cx, cy = ax + t * dx, ay + t * dy
@@ -97,22 +130,37 @@ def signed_clearance(x, y, w1=None, w2=None, arm_len=None):
 
 
 def shape_clearance(points, w1=None, w2=None, arm_len=None):
-    """Worst-case (minimum) clearance over a set of boundary sample points."""
+    """Worst-case (minimum) clearance over a set of boundary sample points.
+
+    This approximates "distance from wall to the whole shape" by checking
+    a finite set of points on the shape's boundary and taking the worst
+    one, rather than computing an exact point-to-polygon distance. It's
+    cheap and, with enough sample points, converges to the same answer;
+    box_sample_points/circle_boundary_points below pick how many.
+    """
     return min(signed_clearance(px, py, w1, w2, arm_len) for px, py in points)
 
 
 def rot(theta):
+    """Standard 2D rotation matrix; used to turn box-local coordinates
+    (long axis = local x, short axis = local y) into world coordinates."""
     c, s = np.cos(theta), np.sin(theta)
     return np.array([[c, -s], [s, c]])
 
 
 def box_corners(x, y, theta):
+    """The box's 4 corners in world coordinates, for drawing its outline."""
     hl, hw = BOX_L / 2, BOX_W / 2
     local = np.array([[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]])
     return local @ rot(theta).T + np.array([x, y])
 
 
 def box_sample_points(x, y, theta, nu=7, nv=4):
+    """A grid of nu*nv points covering the box's footprint (edges and
+    interior), in world coordinates. Used instead of just the 4 corners
+    so a diagonal poking through a wall between two corners still gets
+    caught -- see shape_clearance's docstring for why sampled points
+    rather than an exact polygon distance."""
     hl, hw = BOX_L / 2, BOX_W / 2
     us = np.linspace(-hl, hl, nu)
     vs = np.linspace(-hw, hw, nv)
@@ -121,10 +169,14 @@ def box_sample_points(x, y, theta, nu=7, nv=4):
 
 
 def box_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
+    """Clearance (cm) of the bare box at this pose -- no carrier involved."""
     return shape_clearance(box_sample_points(x, y, theta), w1, w2, arm_len)
 
 
 def circle_boundary_points(center, radius=HUMAN_R, n=16):
+    """n points evenly spaced around a circle -- the same "sample the
+    shape's boundary" trick as box_sample_points, applied to a carrier
+    capsule instead of the box."""
     cx, cy = center
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
     return [(cx + radius * np.cos(a), cy + radius * np.sin(a)) for a in angles]
@@ -199,6 +251,16 @@ def best_human_positions(x, y, theta, num_carriers=None):
 
 
 def collision_free(x, y, theta, with_human, w1=None, w2=None, arm_len=None, num_carriers=None):
+    """The single yes/no check the planner uses for every grid cell.
+
+    with_human=False: can the bare box occupy this pose?
+    with_human=True: can the box *and* its carrier(s) occupy this pose --
+    i.e. is carriable_clearance's best achievable clearance non-negative?
+    This is the one place CLAUDE.md's "swap the collision checker for a
+    carriability oracle" idea actually happens; everything below this
+    function (the grid/BFS planner) doesn't know or care which case it's
+    in, it just calls whatever collision_free() was configured to check.
+    """
     if with_human:
         clearance, _ = carriable_clearance(x, y, theta, w1, w2, arm_len, num_carriers)
         return clearance >= 0
@@ -206,6 +268,8 @@ def collision_free(x, y, theta, with_human, w1=None, w2=None, arm_len=None, num_
 
 
 def angle_wrap(a):
+    """Normalize an angle to (-pi, pi], so e.g. comparing 359 degrees to
+    1 degree gives a 2-degree difference instead of 358."""
     return (a + np.pi) % (2 * np.pi) - np.pi
 
 
@@ -223,6 +287,11 @@ NTH = int(round(2 * np.pi / DTHETA))
 
 
 def build_grid(with_human, w1=None, w2=None, arm_len=None, num_carriers=None):
+    """Precompute a 3D boolean array free[i, j, k]: is grid cell (x=xs[i],
+    y=ys[j], theta=thetas[k]) collision-free? Doing this once up front
+    (rather than calling collision_free during the search) is what makes
+    grid_bfs's neighbor lookups below just array indexing.
+    """
     arm_len = ARM_LEN if arm_len is None else arm_len
     nx = int(round(arm_len / DX)) + 1
     ny = nx
@@ -233,13 +302,18 @@ def build_grid(with_human, w1=None, w2=None, arm_len=None, num_carriers=None):
     for i, x in enumerate(xs):
         for j, y in enumerate(ys):
             if not in_free_space(x, y, w1, w2, arm_len):
-                continue
+                continue  # outside the corridor entirely; every theta here is blocked
             for k, th in enumerate(thetas):
                 free[i, j, k] = collision_free(x, y, th, with_human, w1, w2, arm_len, num_carriers)
     return xs, ys, thetas, free
 
 
 def nearest_index(xs, ys, thetas, state):
+    """Snap a continuous (x, y, theta) state to its nearest grid cell
+    indices (i, j, k). Used to find where START/GOAL land on the grid;
+    angle_wrap keeps the theta search from getting confused by the
+    -pi/+pi wraparound.
+    """
     x, y, th = state
     i = int(np.argmin(np.abs(xs - x)))
     j = int(np.argmin(np.abs(ys - y)))
@@ -248,6 +322,9 @@ def nearest_index(xs, ys, thetas, state):
 
 
 def _reconstruct(xs, ys, thetas, prev, start_idx, end_idx):
+    """Walk the BFS parent pointers (prev) backward from end_idx to
+    start_idx, then reverse to get start->end order, converting grid
+    indices back to (x, y, theta) states along the way."""
     path_idx = [end_idx]
     while path_idx[-1] != start_idx:
         path_idx.append(prev[path_idx[-1]])
@@ -256,6 +333,17 @@ def _reconstruct(xs, ys, thetas, prev, start_idx, end_idx):
 
 
 def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None, arm_len=None, num_carriers=None):
+    """Breadth-first search over the (x, y, theta) grid from build_grid.
+
+    Returns (path, free, xs, ys, thetas) normally: path is the list of
+    (x, y, theta) states from start to goal, or None if no path exists.
+
+    If track_best_effort=True, returns (path, best_effort_path, free, xs,
+    ys, thetas) instead: best_effort_path is always populated (the
+    closest-to-goal state BFS managed to reach, even when path is None),
+    which is what lets the demo show *where* the carrier gets stuck
+    instead of just reporting a plain failure.
+    """
     xs, ys, thetas, free = build_grid(with_human, w1, w2, arm_len, num_carriers)
     nx, ny = len(xs), len(ys)
     start_idx = nearest_index(xs, ys, thetas, start)
@@ -269,9 +357,13 @@ def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None,
 
     from collections import deque
     visited = np.zeros_like(free, dtype=bool)
-    prev = {}
+    prev = {}  # cell -> the cell BFS reached it from, for backtracking a path
     q = deque([start_idx])
     visited[start_idx] = True
+    # All 26 neighboring cells in the 3D (x, y, theta) grid (3*3*3 - 1,
+    # excluding "no move at all"). BFS treats every one of these moves as
+    # unit cost, so the first time it reaches a cell is via a shortest
+    # (in grid-step count) route to it.
     neighbors = [(di, dj, dk) for di in (-1, 0, 1) for dj in (-1, 0, 1)
                  for dk in (-1, 0, 1) if not (di == 0 and dj == 0 and dk == 0)]
 
@@ -288,17 +380,24 @@ def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None,
             return path, free, xs, ys, thetas
         ci, cj, ck = cur
         for di, dj, dk in neighbors:
+            # theta wraps around (mod NTH); x and y don't, hence the
+            # explicit 0 <= ni < nx / 0 <= nj < ny bounds check below.
             ni, nj, nk = ci + di, cj + dj, (ck + dk) % NTH
             if 0 <= ni < nx and 0 <= nj < ny and free[ni, nj, nk] and not visited[ni, nj, nk]:
                 visited[ni, nj, nk] = True
                 prev[(ni, nj, nk)] = cur
                 q.append((ni, nj, nk))
                 if track_best_effort:
+                    # Track whichever visited cell has come closest (in
+                    # plain xy distance) to the goal so far, in case the
+                    # search exhausts itself without ever reaching it.
                     d = np.hypot(xs[ni] - gx, ys[nj] - gy)
                     if d < best_dist:
                         best_dist = d
                         best_idx = (ni, nj, nk)
 
+    # Queue emptied without finding goal_idx: no path exists at this
+    # resolution. If requested, still hand back the best-effort path.
     if track_best_effort:
         best_path = _reconstruct(xs, ys, thetas, prev, start_idx, best_idx)
         return None, best_path, free, xs, ys, thetas
@@ -348,6 +447,8 @@ def find_critical_width(lo=40.0, hi=70.0, iters=10, num_carriers=None):
 
 
 def draw_env(ax, title):
+    """Draw the L-corridor as two overlapping gray rectangles -- the same
+    two rectangles in_free_space() checks against."""
     ax.add_patch(patches.Rectangle((0, 0), ARM_LEN, W1, facecolor='#e8e8e8', edgecolor='none', zorder=0))
     ax.add_patch(patches.Rectangle((0, 0), W2, ARM_LEN, facecolor='#e8e8e8', edgecolor='none', zorder=0))
     ax.set_xlim(-10, ARM_LEN + 10)
@@ -368,12 +469,16 @@ def draw_carriers(ax, x, y, theta, color='tab:red', alpha=0.4, num_carriers=None
 
 
 def run_case(ax, with_human, label, num_carriers=None):
+    """Search START->GOAL for one case (with or without a carrier) and
+    render it into ax: a faint "ghost trail" of the box (and carriers)
+    along the path if one was found, or just the start/goal poses if
+    not."""
     path, free, xs, ys, thetas = grid_bfs(START, GOAL, with_human=with_human, num_carriers=num_carriers)
     found = path is not None
     draw_env(ax, f"{label}: {'PASS (path found)' if found else 'BLOCKED (no path exists at this resolution)'}")
 
     if found:
-        step = max(1, len(path) // 12)
+        step = max(1, len(path) // 12)  # only draw ~12 ghost frames; the full path is too dense to read
         for s in path[::step]:
             draw_box(ax, *s, alpha=0.15)
             if with_human:
@@ -404,6 +509,7 @@ if __name__ == "__main__":
     num_carriers = args.carriers
     carrier_label = "1 carrier" if num_carriers == 1 else "2 carriers"
 
+    # --- Demo 1: the fixed, Phase-0-measured scenario (65x58cm corridor) ---
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
 
     found1, path1 = run_case(axes[0], with_human=False, label="Box only")
@@ -423,6 +529,9 @@ if __name__ == "__main__":
           + (f" (min clearance {path_min_clearance(path2, True, num_carriers):.1f}cm)" if found2 else ""))
     print(f"saved figure to {out_path}")
 
+    # --- Demo 2: sweep a single symmetric width to find the exact cm
+    # where "box passes, carrier doesn't" first appears (see
+    # find_critical_width's docstring for the search itself). ---
     print("\nsearching for the critical corridor width (box passes, carrier blocked)...")
     w, results = find_critical_width(num_carriers=num_carriers)
     if w is not None:
