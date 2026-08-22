@@ -190,19 +190,20 @@ DTHETA = np.radians(15)
 NTH = int(round(2 * np.pi / DTHETA))
 
 
-def build_grid(with_human):
-    nx = int(round(ARM_LEN / DX)) + 1
+def build_grid(with_human, w1=None, w2=None, arm_len=None):
+    arm_len = ARM_LEN if arm_len is None else arm_len
+    nx = int(round(arm_len / DX)) + 1
     ny = nx
-    xs = np.linspace(0, ARM_LEN, nx)
-    ys = np.linspace(0, ARM_LEN, ny)
+    xs = np.linspace(0, arm_len, nx)
+    ys = np.linspace(0, arm_len, ny)
     thetas = -np.pi + DTHETA * np.arange(NTH)
     free = np.zeros((nx, ny, NTH), dtype=bool)
     for i, x in enumerate(xs):
         for j, y in enumerate(ys):
-            if not in_free_space(x, y):
+            if not in_free_space(x, y, w1, w2, arm_len):
                 continue
             for k, th in enumerate(thetas):
-                free[i, j, k] = collision_free(x, y, th, with_human)
+                free[i, j, k] = collision_free(x, y, th, with_human, w1, w2, arm_len)
     return xs, ys, thetas, free
 
 
@@ -222,8 +223,8 @@ def _reconstruct(xs, ys, thetas, prev, start_idx, end_idx):
     return [(xs[i], ys[j], thetas[k]) for i, j, k in path_idx]
 
 
-def grid_bfs(start, goal, with_human, track_best_effort=False):
-    xs, ys, thetas, free = build_grid(with_human)
+def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None, arm_len=None):
+    xs, ys, thetas, free = build_grid(with_human, w1, w2, arm_len)
     nx, ny = len(xs), len(ys)
     start_idx = nearest_index(xs, ys, thetas, start)
     goal_idx = nearest_index(xs, ys, thetas, goal)
@@ -266,6 +267,48 @@ def grid_bfs(start, goal, with_human, track_best_effort=False):
         best_path = _reconstruct(xs, ys, thetas, prev, start_idx, best_idx)
         return None, best_path, free, xs, ys, thetas
     return None, free, xs, ys, thetas
+
+
+def path_min_clearance(path, with_human):
+    """Worst (tightest) clearance encountered along a found path, in cm."""
+    if with_human:
+        return min(carriable_clearance(*s)[0] for s in path)
+    return min(box_clearance(*s) for s in path)
+
+
+def find_critical_width(lo=40.0, hi=70.0, iters=10):
+    """Binary search a single (W1=W2=w) corridor width where the box-only
+    planner still finds a path but the carriability oracle does not.
+
+    Temporarily overrides the module-level W1/W2 globals for each trial
+    (build_grid/in_free_space fall back to them when w1/w2 aren't passed
+    explicitly), restoring the originals afterward.
+    """
+    global W1, W2
+    orig_w1, orig_w2 = W1, W2
+    results = []
+    found_w = None
+    try:
+        for _ in range(iters):
+            w = (lo + hi) / 2.0
+            start = (ARM_LEN - 40.0, w / 2.0, 0.0)
+            goal = (w / 2.0, ARM_LEN - 40.0, np.pi / 2)
+            W1, W2 = w, w
+            path_free, *_ = grid_bfs(start, goal, with_human=False)
+            path_human, *_ = grid_bfs(start, goal, with_human=True)
+            ok_free = path_free is not None
+            ok_human = path_human is not None
+            results.append((w, ok_free, ok_human))
+            if ok_free and not ok_human:
+                found_w = w
+                break
+            elif not ok_free:
+                lo = w
+            else:
+                hi = w
+    finally:
+        W1, W2 = orig_w1, orig_w2
+    return found_w, results
 
 
 def draw_env(ax, title):
