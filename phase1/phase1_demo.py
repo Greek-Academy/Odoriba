@@ -40,6 +40,13 @@ CARRY_ARM = 15.0
 # Lateral stances the carrier may take relative to the box centerline.
 SIDE_OFFSETS = (-15.0, -7.5, 0.0, 7.5, 15.0)
 
+# How many people are carrying the box: 2 (one at each end -- the usual
+# case for furniture) or 1 (one person, trailing behind the rear grip
+# point, e.g. someone solo-carrying this cardboard box). Every oracle
+# function below defaults to this global but also accepts an explicit
+# num_carriers= override, the same pattern used for w1/w2/arm_len.
+NUM_CARRIERS = 2
+
 # START/GOAL sit this far from each arm's modeled end. Must clear
 # BOX_L/2 + CARRY_ARM + HUMAN_R (here 30+15+20=65cm) so the start/goal
 # poses themselves are carriable -- the modeled arm end is a stand-in for
@@ -123,30 +130,45 @@ def circle_boundary_points(center, radius=HUMAN_R, n=16):
     return [(cx + radius * np.cos(a), cy + radius * np.sin(a)) for a in angles]
 
 
-def place_humans(x, y, theta, side_offset):
-    """Front and back carrier positions for a given lateral stance.
+def place_humans(x, y, theta, side_offset, num_carriers=None):
+    """Carrier capsule center(s) for a given lateral stance.
 
-    Two grip points at the box's ends, each extended outward by CARRY_ARM
-    along the box's long axis, with a shared lateral shift (side_offset)
-    perpendicular to it -- this is CLAUDE.md's carriable(q, h) oracle,
-    where h ranges over SIDE_OFFSETS.
+    Grip points sit at the box's end(s), each extended outward by
+    CARRY_ARM along the box's long axis, with a shared lateral shift
+    (side_offset) perpendicular to it -- this is CLAUDE.md's
+    carriable(q, h) oracle, where h ranges over SIDE_OFFSETS.
+
+    num_carriers=2 (default): one person at each end -- returns
+    (front, back).
+    num_carriers=1: a single person trailing behind the box, gripping
+    only the rear point -- returns (back,) as a 1-tuple. Always a
+    1-tuple/2-tuple of (x, y) points, so callers can just loop over it
+    regardless of which case they're in.
     """
+    num_carriers = NUM_CARRIERS if num_carriers is None else num_carriers
     d = np.array([np.cos(theta), np.sin(theta)])
     n = np.array([-d[1], d[0]])
     c = np.array([x, y])
     hl = BOX_L / 2
-    grip_front = c + d * hl
+
     grip_back = c - d * hl
-    h_front = grip_front + d * CARRY_ARM + n * side_offset
-    h_back = grip_back - d * CARRY_ARM + n * side_offset
-    return tuple(h_front), tuple(h_back)
+    h_back = tuple(grip_back - d * CARRY_ARM + n * side_offset)
+    if num_carriers == 1:
+        return (h_back,)
+
+    grip_front = c + d * hl
+    h_front = tuple(grip_front + d * CARRY_ARM + n * side_offset)
+    return (h_front, h_back)
 
 
-def carriable_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
+def carriable_clearance(x, y, theta, w1=None, w2=None, arm_len=None, num_carriers=None):
     """Best clearance achievable over all allowed carrier stances (cm).
 
-    Returns (clearance_cm, best_side_offset). best_side_offset is None if
-    the box itself does not fit (carrier placement is then moot).
+    Tries every stance in SIDE_OFFSETS and keeps the most favorable one,
+    i.e. this answers "does *some* way of standing next to the box work,
+    and if so by how much clearance" -- not "does this one exact stance
+    work". Returns (clearance_cm, best_side_offset); best_side_offset is
+    None if the box itself does not fit (carrier placement is then moot).
     """
     bc = box_clearance(x, y, theta, w1, w2, arm_len)
     if bc < 0:
@@ -154,27 +176,31 @@ def carriable_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
     best = -np.inf
     best_offset = None
     for off in SIDE_OFFSETS:
-        h_front, h_back = place_humans(x, y, theta, off)
-        c1 = shape_clearance(circle_boundary_points(h_front), w1, w2, arm_len)
-        c2 = shape_clearance(circle_boundary_points(h_back), w1, w2, arm_len)
-        cand = min(bc, c1, c2)
+        capsule_centers = place_humans(x, y, theta, off, num_carriers)
+        capsule_clearances = [
+            shape_clearance(circle_boundary_points(p), w1, w2, arm_len)
+            for p in capsule_centers
+        ]
+        # The whole arrangement (box + every carrier) is only as good as
+        # its tightest point.
+        cand = min([bc] + capsule_clearances)
         if cand > best:
             best = cand
             best_offset = off
     return best, best_offset
 
 
-def best_human_positions(x, y, theta):
-    """Carrier capsule centers (front, back) at the best offset, for drawing."""
-    _, offset = carriable_clearance(x, y, theta)
+def best_human_positions(x, y, theta, num_carriers=None):
+    """Carrier capsule center(s) at the best offset, for drawing only."""
+    _, offset = carriable_clearance(x, y, theta, num_carriers=num_carriers)
     if offset is None:
-        offset = 0.0
-    return place_humans(x, y, theta, offset)
+        offset = 0.0  # box itself already fails; offset choice is moot, just draw *something*
+    return place_humans(x, y, theta, offset, num_carriers)
 
 
-def collision_free(x, y, theta, with_human, w1=None, w2=None, arm_len=None):
+def collision_free(x, y, theta, with_human, w1=None, w2=None, arm_len=None, num_carriers=None):
     if with_human:
-        clearance, _ = carriable_clearance(x, y, theta, w1, w2, arm_len)
+        clearance, _ = carriable_clearance(x, y, theta, w1, w2, arm_len, num_carriers)
         return clearance >= 0
     return box_clearance(x, y, theta, w1, w2, arm_len) >= 0
 
@@ -196,7 +222,7 @@ DTHETA = np.radians(15)
 NTH = int(round(2 * np.pi / DTHETA))
 
 
-def build_grid(with_human, w1=None, w2=None, arm_len=None):
+def build_grid(with_human, w1=None, w2=None, arm_len=None, num_carriers=None):
     arm_len = ARM_LEN if arm_len is None else arm_len
     nx = int(round(arm_len / DX)) + 1
     ny = nx
@@ -209,7 +235,7 @@ def build_grid(with_human, w1=None, w2=None, arm_len=None):
             if not in_free_space(x, y, w1, w2, arm_len):
                 continue
             for k, th in enumerate(thetas):
-                free[i, j, k] = collision_free(x, y, th, with_human, w1, w2, arm_len)
+                free[i, j, k] = collision_free(x, y, th, with_human, w1, w2, arm_len, num_carriers)
     return xs, ys, thetas, free
 
 
@@ -229,8 +255,8 @@ def _reconstruct(xs, ys, thetas, prev, start_idx, end_idx):
     return [(xs[i], ys[j], thetas[k]) for i, j, k in path_idx]
 
 
-def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None, arm_len=None):
-    xs, ys, thetas, free = build_grid(with_human, w1, w2, arm_len)
+def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None, arm_len=None, num_carriers=None):
+    xs, ys, thetas, free = build_grid(with_human, w1, w2, arm_len, num_carriers)
     nx, ny = len(xs), len(ys)
     start_idx = nearest_index(xs, ys, thetas, start)
     goal_idx = nearest_index(xs, ys, thetas, goal)
@@ -279,14 +305,14 @@ def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None,
     return None, free, xs, ys, thetas
 
 
-def path_min_clearance(path, with_human):
+def path_min_clearance(path, with_human, num_carriers=None):
     """Worst (tightest) clearance encountered along a found path, in cm."""
     if with_human:
-        return min(carriable_clearance(*s)[0] for s in path)
+        return min(carriable_clearance(*s, num_carriers=num_carriers)[0] for s in path)
     return min(box_clearance(*s) for s in path)
 
 
-def find_critical_width(lo=40.0, hi=70.0, iters=10):
+def find_critical_width(lo=40.0, hi=70.0, iters=10, num_carriers=None):
     """Binary search a single (W1=W2=w) corridor width where the box-only
     planner still finds a path but the carriability oracle does not.
 
@@ -305,7 +331,7 @@ def find_critical_width(lo=40.0, hi=70.0, iters=10):
             goal = (w / 2.0, ARM_LEN - END_MARGIN, np.pi / 2)
             W1, W2 = w, w
             path_free, *_ = grid_bfs(start, goal, with_human=False)
-            path_human, *_ = grid_bfs(start, goal, with_human=True)
+            path_human, *_ = grid_bfs(start, goal, with_human=True, num_carriers=num_carriers)
             ok_free = path_free is not None
             ok_human = path_human is not None
             results.append((w, ok_free, ok_human))
@@ -335,15 +361,14 @@ def draw_box(ax, x, y, theta, color='tab:blue', alpha=0.5, lw=1.0):
     ax.add_patch(patches.Polygon(corners, closed=True, facecolor=color, edgecolor='k', alpha=alpha, linewidth=lw, zorder=2))
 
 
-def draw_carriers(ax, x, y, theta, color='tab:red', alpha=0.4):
-    """Both carrier capsules at the best side offset for this pose."""
-    h_front, h_back = best_human_positions(x, y, theta)
-    for c in (h_front, h_back):
+def draw_carriers(ax, x, y, theta, color='tab:red', alpha=0.4, num_carriers=None):
+    """Every carrier capsule (1 or 2, per num_carriers) at the best side offset."""
+    for c in best_human_positions(x, y, theta, num_carriers):
         ax.add_patch(patches.Circle(c, HUMAN_R, facecolor=color, edgecolor='k', alpha=alpha, zorder=1))
 
 
-def run_case(ax, with_human, label):
-    path, free, xs, ys, thetas = grid_bfs(START, GOAL, with_human=with_human)
+def run_case(ax, with_human, label, num_carriers=None):
+    path, free, xs, ys, thetas = grid_bfs(START, GOAL, with_human=with_human, num_carriers=num_carriers)
     found = path is not None
     draw_env(ax, f"{label}: {'PASS (path found)' if found else 'BLOCKED (no path exists at this resolution)'}")
 
@@ -352,44 +377,56 @@ def run_case(ax, with_human, label):
         for s in path[::step]:
             draw_box(ax, *s, alpha=0.15)
             if with_human:
-                draw_carriers(ax, *s, alpha=0.10)
+                draw_carriers(ax, *s, alpha=0.10, num_carriers=num_carriers)
         draw_box(ax, *path[0], color='tab:green', alpha=0.9)
         draw_box(ax, *path[-1], color='tab:blue', alpha=0.9)
         if with_human:
-            draw_carriers(ax, *path[0], color='tab:green', alpha=0.5)
-            draw_carriers(ax, *path[-1], color='tab:blue', alpha=0.5)
+            draw_carriers(ax, *path[0], color='tab:green', alpha=0.5, num_carriers=num_carriers)
+            draw_carriers(ax, *path[-1], color='tab:blue', alpha=0.5, num_carriers=num_carriers)
     else:
         draw_box(ax, *START, color='tab:green', alpha=0.9)
         draw_box(ax, *GOAL, color='tab:blue', alpha=0.4)
         if with_human:
-            draw_carriers(ax, *START, color='tab:green', alpha=0.5)
-            draw_carriers(ax, *GOAL, color='tab:blue', alpha=0.3)
+            draw_carriers(ax, *START, color='tab:green', alpha=0.5, num_carriers=num_carriers)
+            draw_carriers(ax, *GOAL, color='tab:blue', alpha=0.3, num_carriers=num_carriers)
     return found, path
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--carriers", type=int, choices=(1, 2), default=NUM_CARRIERS,
+        help="How many people carry the box: 1 (solo, trailing behind) "
+             "or 2 (one at each end). Default: %(default)s.")
+    args = parser.parse_args()
+    num_carriers = args.carriers
+    carrier_label = "1 carrier" if num_carriers == 1 else "2 carriers"
+
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
 
     found1, path1 = run_case(axes[0], with_human=False, label="Box only")
-    found2, path2 = run_case(axes[1], with_human=True, label="Box + carrier")
+    found2, path2 = run_case(axes[1], with_human=True, label=f"Box + {carrier_label}", num_carriers=num_carriers)
 
     fig.suptitle("Odoriba Phase 1: L-corridor, box vs box+human "
                   f"(corridor {W1:.0f}x{W2:.0f}cm, box {BOX_L:.0f}x{BOX_W:.0f}cm, "
-                  f"carrier r={HUMAN_R:.0f}cm)")
+                  f"carrier r={HUMAN_R:.0f}cm, {carrier_label})")
     fig.tight_layout()
     out_path = "phase1_demo.png"
     fig.savefig(out_path, dpi=150)
 
+    print(f"carriers: {num_carriers}")
     print(f"box only:    {'PASS' if found1 else 'BLOCKED'}"
           + (f" (min clearance {path_min_clearance(path1, False):.1f}cm)" if found1 else ""))
     print(f"box+carrier: {'PASS' if found2 else 'BLOCKED'}"
-          + (f" (min clearance {path_min_clearance(path2, True):.1f}cm)" if found2 else ""))
+          + (f" (min clearance {path_min_clearance(path2, True, num_carriers):.1f}cm)" if found2 else ""))
     print(f"saved figure to {out_path}")
 
     print("\nsearching for the critical corridor width (box passes, carrier blocked)...")
-    w, results = find_critical_width()
+    w, results = find_critical_width(num_carriers=num_carriers)
     if w is not None:
-        print(f"廊下幅 {w:.1f}cm / 箱 {BOX_L:.0f}x{BOX_W:.0f}cm / 人 r={HUMAN_R:.0f}cm, arm={CARRY_ARM:.0f}cm")
+        print(f"廊下幅 {w:.1f}cm / 箱 {BOX_L:.0f}x{BOX_W:.0f}cm / 人 r={HUMAN_R:.0f}cm, arm={CARRY_ARM:.0f}cm, {carrier_label}")
         print("  自由剛体  : 通る")
         print("  人あり    : 通らない")
     else:
