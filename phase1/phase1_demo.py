@@ -39,8 +39,48 @@ START = (ARM_LEN - 40.0, W1 / 2, 0.0)
 GOAL = (W2 / 2, ARM_LEN - 40.0, np.pi / 2)
 
 
-def in_free_space(x, y):
-    return (0 <= x <= ARM_LEN and 0 <= y <= W1) or (0 <= x <= W2 and 0 <= y <= ARM_LEN)
+def in_free_space(x, y, w1=None, w2=None, arm_len=None):
+    w1 = W1 if w1 is None else w1
+    w2 = W2 if w2 is None else w2
+    arm_len = ARM_LEN if arm_len is None else arm_len
+    return (0 <= x <= arm_len and 0 <= y <= w1) or (0 <= x <= w2 and 0 <= y <= arm_len)
+
+
+def _point_seg_dist(px, py, ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return float(np.hypot(px - ax, py - ay))
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    t = min(1.0, max(0.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return float(np.hypot(px - cx, py - cy))
+
+
+def dist_to_boundary(x, y, w1=None, w2=None, arm_len=None):
+    """Distance from (x, y) to the nearest wall of the L-shaped free space.
+
+    The free space is the union of two rectangles, whose boundary is the
+    hexagon (0,0) -> (arm_len,0) -> (arm_len,w1) -> (w2,w1) -> (w2,arm_len)
+    -> (0,arm_len). Distance to that hexagon's edges is exactly the
+    clearance to the nearest wall for any point inside it.
+    """
+    w1 = W1 if w1 is None else w1
+    w2 = W2 if w2 is None else w2
+    arm_len = ARM_LEN if arm_len is None else arm_len
+    verts = [(0, 0), (arm_len, 0), (arm_len, w1), (w2, w1), (w2, arm_len), (0, arm_len)]
+    n = len(verts)
+    return min(_point_seg_dist(x, y, *verts[i], *verts[(i + 1) % n]) for i in range(n))
+
+
+def signed_clearance(x, y, w1=None, w2=None, arm_len=None):
+    """+cm of margin to the nearest wall if inside; -cm of overshoot if outside."""
+    d = dist_to_boundary(x, y, w1, w2, arm_len)
+    return d if in_free_space(x, y, w1, w2, arm_len) else -d
+
+
+def shape_clearance(points, w1=None, w2=None, arm_len=None):
+    """Worst-case (minimum) clearance over a set of boundary sample points."""
+    return min(signed_clearance(px, py, w1, w2, arm_len) for px, py in points)
 
 
 def rot(theta):
@@ -60,6 +100,10 @@ def box_sample_points(x, y, theta, nu=7, nv=4):
     vs = np.linspace(-hw, hw, nv)
     local = np.array([[u, v] for u in us for v in vs])
     return local @ rot(theta).T + np.array([x, y])
+
+
+def box_clearance(x, y, theta, w1=None, w2=None, arm_len=None):
+    return shape_clearance(box_sample_points(x, y, theta), w1, w2, arm_len)
 
 
 def human_circle_center(x, y, theta):
