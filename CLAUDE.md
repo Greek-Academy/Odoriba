@@ -139,6 +139,8 @@ pip install numpy scipy trimesh open3d matplotlib
 - 1ブランチ = 1目的（複数の変更を混在させない）
 - 個人名ブランチは使用しない
 - コミットメッセージは `C:\dev\CLAUDE.md` の Conventional Commits 規約に従う
+- **作業は必ず feature/hotfix/release ブランチ上で行う。** 調査や小さな修正であっても `main` / `develop` 上で直接作業しない
+- **コミットは粒度高く分ける。** 1コミット＝1つの論理的変更とし、複数の変更をまとめた大きな一括コミットは避ける。あとから `git log` を読んだときに、何をどの順で変えたかが追えることを優先する
 
 ---
 
