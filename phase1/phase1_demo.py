@@ -36,12 +36,18 @@ HUMAN_R = 20.0     # carrier body capsule radius (CLAUDE.md: 0.2m)
 # Arm reach from the grip point to where the carrier's body center sits.
 # Not yet measured in Phase 0 -- placeholder pending a real value, chosen
 # to be the same order of magnitude as the box and corridor.
-CARRY_ARM = 35.0
+CARRY_ARM = 15.0
 # Lateral stances the carrier may take relative to the box centerline.
 SIDE_OFFSETS = (-15.0, -7.5, 0.0, 7.5, 15.0)
 
-START = (ARM_LEN - 40.0, W1 / 2, 0.0)
-GOAL = (W2 / 2, ARM_LEN - 40.0, np.pi / 2)
+# START/GOAL sit this far from each arm's modeled end. Must clear
+# BOX_L/2 + CARRY_ARM + HUMAN_R (here 30+15+20=65cm) so the start/goal
+# poses themselves are carriable -- the modeled arm end is a stand-in for
+# "corridor keeps going", not a real wall, and a too-small margin makes a
+# trailing capsule stick out past it even though nothing is really there.
+END_MARGIN = 75.0
+START = (ARM_LEN - END_MARGIN, W1 / 2, 0.0)
+GOAL = (W2 / 2, ARM_LEN - END_MARGIN, np.pi / 2)
 
 
 def in_free_space(x, y, w1=None, w2=None, arm_len=None):
@@ -295,8 +301,8 @@ def find_critical_width(lo=40.0, hi=70.0, iters=10):
     try:
         for _ in range(iters):
             w = (lo + hi) / 2.0
-            start = (ARM_LEN - 40.0, w / 2.0, 0.0)
-            goal = (w / 2.0, ARM_LEN - 40.0, np.pi / 2)
+            start = (ARM_LEN - END_MARGIN, w / 2.0, 0.0)
+            goal = (w / 2.0, ARM_LEN - END_MARGIN, np.pi / 2)
             W1, W2 = w, w
             path_free, *_ = grid_bfs(start, goal, with_human=False)
             path_human, *_ = grid_bfs(start, goal, with_human=True)
