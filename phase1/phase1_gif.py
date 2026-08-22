@@ -35,21 +35,21 @@ def interpolate_path(path, sub_steps=4):
     return dense
 
 
-def draw_carrier(ax, x, y, theta, color='tab:orange', alpha=0.5):
-    """Both carrier capsules (front + back grip) plus a facing marker."""
+def draw_carrier(ax, x, y, theta, color='tab:orange', alpha=0.5, num_carriers=None):
+    """Every carrier capsule (1 or 2, per num_carriers) plus a facing marker."""
     r = m.HUMAN_R
-    for cx, cy in m.best_human_positions(x, y, theta):
+    for cx, cy in m.best_human_positions(x, y, theta, num_carriers):
         ax.add_patch(patches.Circle((cx, cy), r, facecolor=color, edgecolor='k', alpha=alpha, zorder=1))
         nose = np.array([cx, cy]) + r * 0.9 * np.array([np.cos(theta), np.sin(theta)])
         ax.plot([cx, nose[0]], [cy, nose[1]], color='k', linewidth=2, alpha=min(1.0, alpha + 0.3), zorder=2)
 
 
-def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20):
+def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20, num_carriers=None):
     path_box, _, _, _, _ = m.grid_bfs(m.START, m.GOAL, with_human=False)
     assert path_box is not None, "box-only path must exist"
 
     full_path, best_path, _, _, _, _ = m.grid_bfs(
-        m.START, m.GOAL, with_human=True, track_best_effort=True)
+        m.START, m.GOAL, with_human=True, track_best_effort=True, num_carriers=num_carriers)
     assert full_path is None, "expected the carrier case to be blocked for this demo"
     assert best_path is not None and len(best_path) > 1
 
@@ -75,7 +75,8 @@ def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20):
         box_color = 'tab:red' if stuck else 'tab:blue'
         carrier_color = 'tab:red' if stuck else 'tab:orange'
         m.draw_box(axes[1], *dense_carrier[right_i], color=box_color, alpha=0.9)
-        draw_carrier(axes[1], *dense_carrier[right_i], color=carrier_color, alpha=0.65 if stuck else 0.5)
+        draw_carrier(axes[1], *dense_carrier[right_i], color=carrier_color, alpha=0.65 if stuck else 0.5,
+                     num_carriers=num_carriers)
 
         fig.suptitle("Odoriba Phase 1: box-only (complete) vs. box+carrier (best-effort) "
                       f"(corridor {m.W1:.0f}x{m.W2:.0f}cm, box {m.BOX_L:.0f}x{m.BOX_W:.0f}cm)")
@@ -90,4 +91,12 @@ def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20):
 
 
 if __name__ == "__main__":
-    build_gif()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--carriers", type=int, choices=(1, 2), default=m.NUM_CARRIERS,
+        help="How many people carry the box: 1 (solo, trailing behind) "
+             "or 2 (one at each end). Default: %(default)s.")
+    args = parser.parse_args()
+    build_gif(num_carriers=args.carriers)
