@@ -228,8 +228,12 @@ def grid_bfs(start, goal, with_human, track_best_effort=False, w1=None, w2=None,
     nx, ny = len(xs), len(ys)
     start_idx = nearest_index(xs, ys, thetas, start)
     goal_idx = nearest_index(xs, ys, thetas, goal)
-    if not free[start_idx] or not free[goal_idx]:
+    if not free[start_idx]:
         return (None, free, xs, ys, thetas) if not track_best_effort else (None, None, free, xs, ys, thetas)
+    if not free[goal_idx] and not track_best_effort:
+        # No exact path can end on a blocked goal cell; only worth the full
+        # search below when the caller wants the best-effort approach instead.
+        return None, free, xs, ys, thetas
 
     from collections import deque
     visited = np.zeros_like(free, dtype=bool)
