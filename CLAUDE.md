@@ -136,17 +136,22 @@ pip install numpy scipy trimesh open3d matplotlib
 
 1. `develop` から `feature/<説明>` を切る（`develop` が無ければ `main` から作る）
 2. feature ブランチでコミットを積む
-3. PR を作成して `develop` にマージする
+3. `develop` にマージする（下記「PRについて」参照）
 4. リリース時に `develop` から `release/<version>` を切り、確定したら `main` と `develop` の両方にマージしてタグを打つ
 5. マージ後にブランチを削除する
 
+## PRについて
+
+**現在は1人での開発のため、PRは必須としない。** feature ブランチの作業が終わったら、ローカルで `develop`（または `main`）に `git merge --no-ff` し、そのまま push してよい。GitHub上のPRは「見返したい時に開く」任意の手段として使う。
+
+共同開発者が加わったら、レビューを機能させるためPR経由必須の運用に戻すこと。
+
 ## ルール
 
-- `main` と `develop` への直接プッシュは禁止。PR 経由でのみマージする
+- feature/hotfix/release ブランチへの作業コミットは、必ずそのブランチ上で行う（`main`/`develop` へ直接コミットしない）
 - 1ブランチ = 1目的（複数の変更を混在させない）
 - 個人名ブランチは使用しない
 - コミットメッセージは `C:\dev\CLAUDE.md` の Conventional Commits 規約に従う
-- **作業は必ず feature/hotfix/release ブランチ上で行う。** 調査や小さな修正であっても `main` / `develop` 上で直接作業しない
 - **コミットは粒度高く分ける。** 1コミット＝1つの論理的変更とし、複数の変更をまとめた大きな一括コミットは避ける。あとから `git log` を読んだときに、何をどの順で変えたかが追えることを優先する
 
 ---
