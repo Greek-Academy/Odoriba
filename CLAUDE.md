@@ -119,25 +119,25 @@ pip install numpy scipy trimesh open3d matplotlib
 | `main` | — | — | 本番リリース履歴のみ。タグを打つ。直接コミット禁止 |
 | `develop` | `main` | — | 開発の統合ブランチ。直接コミット禁止、feature 経由でのみマージ |
 | `feature/<説明>` | `develop` | `develop` | 新機能・調査・移行作業など通常の開発 |
-| `release/<version>` | `develop` | `main` と `develop` | リリース準備（バージョン確定・最終調整） |
 | `hotfix/<説明>` | `main` | `main` と `develop` | 本番の緊急修正 |
+
+**`release/<version>` ブランチは使わない。** developで複数人が並行して作業し、リリース準備だけを別ラインで進める必要が出てきたら導入を検討する。それまではリリース時に `develop` を直接 `main` にマージしてタグを打つ。
 
 ## 命名規則
 
-- 形式: `<type>/<kebab-case-description>`（`release` のみ `release/<semver>`）
+- 形式: `<type>/<kebab-case-description>`
 - 英小文字・数字・ハイフンのみ使用する
 - 例:
   - `feature/rrt-connect-planner`
   - `feature/migrate-alpha-project-docs`
   - `hotfix/collision-check-off-by-one`
-  - `release/0.1.0`
 
 ## 作業フロー
 
 1. `develop` から `feature/<説明>` を切る（`develop` が無ければ `main` から作る）
 2. feature ブランチでコミットを積む
 3. `develop` にマージする（下記「PRについて」参照）
-4. リリース時に `develop` から `release/<version>` を切り、確定したら `main` と `develop` の両方にマージしてタグを打つ
+4. リリース時は `develop` を `main` に直接マージし、`vX.Y.Z` のタグを打つ
 5. マージ後にブランチを削除する
 
 ## PRについて
@@ -148,7 +148,7 @@ pip install numpy scipy trimesh open3d matplotlib
 
 ## ルール
 
-- feature/hotfix/release ブランチへの作業コミットは、必ずそのブランチ上で行う（`main`/`develop` へ直接コミットしない）
+- feature/hotfix ブランチへの作業コミットは、必ずそのブランチ上で行う（`main`/`develop` へ直接コミットしない）
 - 1ブランチ = 1目的（複数の変更を混在させない）
 - 個人名ブランチは使用しない
 - コミットメッセージは `C:\dev\CLAUDE.md` の Conventional Commits 規約に従う
