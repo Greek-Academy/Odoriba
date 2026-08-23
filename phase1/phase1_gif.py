@@ -1,17 +1,18 @@
 """
-Phase 1 GIF: box alone (reaches the goal) vs. box + carrier (best-effort,
-does not reach the goal).
+Phase 1 GIF: 箱単体(ゴールに到達)vs 箱+運搬者(best-effort、
+ゴールには到達しない)。
 
-With the two-capsule + side-offset carriability oracle, the box-only
-path is not guaranteed to be the trajectory that "shows" the carrier
-jamming -- the more permissive oracle may find that path individually
-fine while a full grid search still can't connect start to goal at all
-(a different bottleneck elsewhere blocks every route). So the two panels
-now show two independently-found paths: the box-only planner's complete
-solution, and the carrier oracle's *best-effort* path (grid_bfs with
-track_best_effort=True), i.e. the closest-to-goal state it could reach
-before every neighboring cell was blocked. That stopping point is a real
-dead end in the search graph, not a scripted wiggle-in-place.
+前後2カプセル+横位置探索の可搬性オラクルでは、箱単体の経路が
+そのまま「運搬者が詰まる様子」を見せてくれる経路とは限らない --
+より寛容なこのオラクルでは、その経路自体は個別に問題なく通れる
+一方で、全体のグリッド探索ではstartからgoalへの接続が完全に
+見つからない(別の場所にあるボトルネックがすべての経路を塞いで
+いる)ということが起こり得る。そこで2つのパネルは、独立に見つけた
+2本の経路を表示する: 箱単体プランナーの完全な解と、運搬者オラクル
+の*best-effort*経路(track_best_effort=Trueでのgrid_bfs)、
+つまり隣接セルがすべてブロックされる直前まで到達できた
+一番ゴールに近い状態。この止まる場所は探索グラフ上の本物の
+行き止まりであり、演出でその場に揺らしているわけではない。
 """
 
 import numpy as np
@@ -23,11 +24,10 @@ import phase1_demo as m
 
 
 def interpolate_path(path, sub_steps=4):
-    """Turn a coarse grid_bfs path (one point per grid cell, so it can
-    visibly "jump" between frames) into a smooth one by linearly
-    interpolating position and angle between each consecutive pair of
-    states, sub_steps times. angle_wrap keeps the rotation from taking
-    the "long way around" through the -pi/+pi seam.
+    """grid_bfsの粗い経路(グリッドセル1つにつき1点なので、フレーム間で
+    見た目上「飛ぶ」)を、連続する状態のペアごとに位置と角度を
+    sub_steps回線形補間して滑らかにする。angle_wrapによって、
+    回転が-pi/+piの継ぎ目を通って「遠回り」しないようにしている。
     """
     dense = [path[0]]
     for a, b in zip(path[:-1], path[1:]):
@@ -42,7 +42,8 @@ def interpolate_path(path, sub_steps=4):
 
 
 def draw_carrier(ax, x, y, theta, color='tab:orange', alpha=0.5, num_carriers=None):
-    """Every carrier capsule (1 or 2, per num_carriers) plus a facing marker."""
+    """すべての運搬者カプセル(num_carriersに応じて1個か2個)と、
+    向きが分かるようにするための線。"""
     r = m.HUMAN_R
     for cx, cy in m.best_human_positions(x, y, theta, num_carriers):
         ax.add_patch(patches.Circle((cx, cy), r, facecolor=color, edgecolor='k', alpha=alpha, zorder=1))
@@ -51,15 +52,15 @@ def draw_carrier(ax, x, y, theta, color='tab:orange', alpha=0.5, num_carriers=No
 
 
 def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20, num_carriers=None):
-    """Render the two-panel comparison GIF and save it to out_path.
+    """2パネル比較GIFを描画してout_pathに保存する。
 
-    Left panel: the box-only path (always reaches the goal here -- see
-    the module docstring for why this is the "easy" case).
-    Right panel: the carrier oracle's best-effort path, which stops at
-    whatever pose was closest to the goal before the search ran out of
-    unblocked neighbors (a real dead end, not scripted). Both panels
-    freeze on their last frame for hold_frames extra frames at the end
-    so the final PASS/BLOCKED state is easy to read before the GIF loops.
+    左パネル: 箱単体の経路(ここでは常にゴールに到達する -- なぜ
+    これが「簡単な」ケースなのかはモジュールdocstring参照)。
+    右パネル: 運搬者オラクルのbest-effort経路。探索がブロックされて
+    いない隣接セルを使い果たす直前の、一番ゴールに近かった姿勢で
+    止まる(演出ではなく本物の行き止まり)。GIFがループする前に
+    最終的なPASS/BLOCKED状態を読み取りやすいよう、両パネルとも
+    最後のフレームでhold_frames分だけ静止する。
     """
     path_box, _, _, _, _ = m.grid_bfs(m.START, m.GOAL, with_human=False)
     assert path_box is not None, "box-only path must exist"
@@ -72,16 +73,16 @@ def build_gif(out_path="phase1_demo.gif", fps=12, sub_steps=6, hold_frames=20, n
     dense_box = interpolate_path(path_box, sub_steps=sub_steps)
     dense_carrier = interpolate_path(best_path, sub_steps=sub_steps)
     n_box, n_carrier = len(dense_box), len(dense_carrier)
-    # The two paths are different lengths (one reaches the goal, one
-    # doesn't) and are shown on independent clocks: each panel just holds
-    # its last frame once it runs out, rather than looping or resetting.
+    # 2本の経路は長さが違い(片方はゴールに到達し、片方はしない)、
+    # それぞれ独立した時間軸で表示される: ループしたりリセット
+    # したりせず、尽きたらそのパネルは最後のフレームで止まるだけ。
     total_frames = max(n_box, n_carrier) + hold_frames
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 6.5))
 
     def render(frame_i):
         for ax in axes:
-            ax.clear()  # matplotlib has no built-in "redraw at frame N"; easiest is full redraw
+            ax.clear()  # matplotlibには「フレームNで再描画」という組み込み機能がないので、毎回全部描き直すのが一番簡単
 
         left_i = min(frame_i, n_box - 1)
         left_done = frame_i >= n_box - 1
