@@ -101,6 +101,13 @@ pip install numpy scipy trimesh open3d matplotlib
 
 ---
 
+# コーディング規約
+
+- **コード中のコメント・docstringは日本語で書く。** 変数名・関数名・print出力・ライブラリのAPIなど、日本語にすると不自然/壊れるものは対象外
+- 一目的一コミットの粒度と同様、コメントの言語も「あとから読む人が迷わない」ことを優先する
+
+---
+
 # ブランチ戦略（Git Flow）
 
 このプロジェクトは Git Flow を採用する。`C:\dev\CLAUDE.md` の GitHub Flow 記述より、本リポジトリではこちらを優先する。
