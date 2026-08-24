@@ -208,3 +208,203 @@ def collision_free(pos, quat, with_human, outer, obstacles, num_carriers=None):
         clearance, _ = carriable_clearance(pos, quat, outer, obstacles, num_carriers)
         return clearance >= 0
     return furniture_clearance(pos, quat, outer, obstacles) >= 0
+
+
+# ---- RRT-Connect プランナー ----
+# Phase 1はグリッド上のBFSで全探索できたが、ここは(位置3 + 姿勢4の)
+# 6DOF。グリッドを細かく切って全探索すると状態数が現実的な時間で
+# 収まらない。CLAUDE.mdの通りRRT-Connectを自作する。
+
+W_ROT = 0.4  # dist_se3の回転項の重み。家具の外接半径くらいのオーダーが目安
+MAX_STEP = 20.0  # 1回のextendで進む最大距離(cm、dist_se3換算)
+EDGE_RES = 4.0    # エッジ検証(衝突チェック)の刻み幅(cm)
+GOAL_TOL_POS = 8.0    # ゴール判定: 位置の許容誤差(cm)
+GOAL_TOL_ROT = 0.15   # ゴール判定: 姿勢の許容誤差(ラジアン)
+
+
+STAIR_ANGLE = np.arctan2(RISE, TREAD)  # 階段の傾斜角(ラジアン)
+
+
+def stairs_profile_z(y):
+    """階段の中心線に沿って、その y 座標での「歩行面の高さ」を返す。
+    sample_guidedが位置のサンプリングを誘導するために使うだけの
+    大まかな目安で、衝突判定には使わない。"""
+    if y < BASE_LANDING_D:
+        return 0.0
+    step_y = y - BASE_LANDING_D
+    i = min(int(step_y // TREAD), N_STEPS - 1)
+    if step_y >= N_STEPS * TREAD:
+        return N_STEPS * RISE
+    return RISE * (i + 1)
+
+
+def _base_yaw_quat():
+    """家具の長軸(ローカルx)を進行方向(ワールドy)に向ける基準姿勢。"""
+    return Rotation.from_euler("z", 90, degrees=True)
+
+
+def sample_guided(outer, rng, p=0.7, pos_noise=15.0, rot_noise_deg=10.0):
+    """状態空間からのサンプリング。
+
+    狭い通路(踊り場・階段)ではランダムサンプリングがほぼ当たらない
+    (CLAUDE.mdの「骨格でサンプリングを誘導する」対策そのもの)。
+
+    位置だけでなく姿勢の誘導も要る。この家具(長辺180cm)は踏み面
+    26cmよりずっと長いため、水平のまま(傾けずに)階段区間に置くと
+    ほぼ必ずどこかの段にぶつかる -- 現実に階段で家具を運ぶときに
+    傾けるのと同じ理由。そこで、階段区間(y方向)をサンプルしたときは
+    長軸を進行方向に向けたうえで、階段の傾斜角(STAIR_ANGLE)を中心に
+    ノイズを乗せてピッチさせる。踊り場区間では傾斜0を中心にする。
+    確率(1-p)では姿勢・位置とも完全ランダムにし、この誘導だけでは
+    見つからない解(踊り場での回転など)も探索できるようにする。
+    """
+    outer_center, _, outer_half = outer
+    if rng.random() < p:
+        y = rng.uniform(0.0, outer_half[1] * 2)
+        z = stairs_profile_z(y) + FURN_H / 2
+        x = outer_half[0] + rng.normal(0.0, pos_noise * 0.5)
+        pos = np.array([x, y, z]) + rng.normal(0.0, pos_noise, size=3) * np.array([1, 1, 0.3])
+
+        on_stairs = BASE_LANDING_D <= y <= BASE_LANDING_D + N_STEPS * TREAD
+        target_pitch = STAIR_ANGLE if on_stairs else 0.0
+        pitch = target_pitch + np.radians(rng.normal(0.0, rot_noise_deg))
+        yaw_noise = np.radians(rng.normal(0.0, rot_noise_deg))
+        roll_noise = np.radians(rng.normal(0.0, rot_noise_deg))
+        rot = (Rotation.from_euler("z", 90 + np.degrees(yaw_noise), degrees=True)
+               * Rotation.from_euler("x", np.degrees(pitch), degrees=True)
+               * Rotation.from_euler("y", np.degrees(roll_noise), degrees=True))
+        quat = rot.as_quat()
+    else:
+        pos = rng.uniform(0.0, outer_half * 2)
+        quat = g3.random_quaternion(rng)
+    return pos, quat
+
+
+def edge_valid(pos1, quat1, pos2, quat2, with_human, outer, obstacles, num_carriers=None):
+    """2状態間を補間し、刻み幅EDGE_RESごとに衝突チェックする。
+
+    端点だけ見ると、壁を突き抜ける経路が「有効」と判定されてしまう
+    (Phase 1のimplementation-guide.mdで最初に触れている罠と同じ)。
+    """
+    d = g3.dist_se3(pos1, quat1, pos2, quat2, w=W_ROT)
+    n = max(2, int(d / EDGE_RES))
+    for i in range(n + 1):
+        t = i / n
+        p, q = g3.interpolate_se3(pos1, quat1, pos2, quat2, t)
+        if not collision_free(p, q, with_human, outer, obstacles, num_carriers):
+            return False
+    return True
+
+
+class _Node:
+    __slots__ = ("pos", "quat", "parent")
+
+    def __init__(self, pos, quat, parent=None):
+        self.pos = pos
+        self.quat = quat
+        self.parent = parent
+
+
+def _nearest(tree, pos, quat):
+    dists = [g3.dist_se3(n.pos, n.quat, pos, quat, w=W_ROT) for n in tree]
+    i = int(np.argmin(dists))
+    return i, dists[i]
+
+
+def _steer(pos_from, quat_from, pos_to, quat_to):
+    """pos_from/quat_fromから、pos_to/quat_toの方向へMAX_STEPだけ進んだ状態。"""
+    d = g3.dist_se3(pos_from, quat_from, pos_to, quat_to, w=W_ROT)
+    t = 1.0 if d <= MAX_STEP else MAX_STEP / d
+    return g3.interpolate_se3(pos_from, quat_from, pos_to, quat_to, t)
+
+
+def _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers):
+    """treeを1歩だけpos_target/quat_targetへ伸ばす。伸びたら新しいノード
+    のインデックスを、伸びなければNoneを返す。"""
+    i_near, _ = _nearest(tree, pos_target, quat_target)
+    near = tree[i_near]
+    pos_new, quat_new = _steer(near.pos, near.quat, pos_target, quat_target)
+    if not edge_valid(near.pos, near.quat, pos_new, quat_new, with_human, outer, obstacles, num_carriers):
+        return None
+    tree.append(_Node(pos_new, quat_new, i_near))
+    return len(tree) - 1
+
+
+def _connect(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers):
+    """targetに向かって、ブロックされるかtargetに届くまでextendを繰り返す
+    (RRT-Connectの"connect"ヒューリスティック: 1本のツリーを毎回1歩ずつ
+    伸ばすより、狭い通路を素早く抜けやすい)。"""
+    last = None
+    while True:
+        idx = _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers)
+        if idx is None:
+            return last
+        last = idx
+        node = tree[idx]
+        if g3.dist_se3(node.pos, node.quat, pos_target, quat_target, w=W_ROT) < 1e-6:
+            return last  # targetそのものに到達
+
+
+def _reached(node, pos, quat):
+    dp = np.linalg.norm(node.pos - pos)
+    r1 = Rotation.from_quat(node.quat)
+    r2 = Rotation.from_quat(quat)
+    dtheta = (r1.inv() * r2).magnitude()
+    return dp < GOAL_TOL_POS and dtheta < GOAL_TOL_ROT
+
+
+def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
+    """2本のツリーが繋がった点から、start->goalの状態列を組み立てる。"""
+    path_a = []
+    i = idx_a
+    while i is not None:
+        n = tree_a[i]
+        path_a.append((n.pos, n.quat))
+        i = n.parent
+    path_a.reverse()
+
+    path_b = []
+    i = idx_b
+    while i is not None:
+        n = tree_b[i]
+        path_b.append((n.pos, n.quat))
+        i = n.parent
+
+    if swapped:
+        path_a, path_b = path_b, path_a
+    return path_a + path_b
+
+
+def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
+                 max_iter=3000, seed=0):
+    """RRT-Connect本体。startとgoalそれぞれからツリーを伸ばし、交互に
+    相手のツリーの新しいノードへconnectを試みる(implementation-guide.md
+    のrrt_connectと同じ構造)。
+
+    見つかればstart->goalの(pos, quat)状態列を、見つからなければ
+    Noneを返す。
+    """
+    start_pos, start_quat = start
+    goal_pos, goal_quat = goal
+    if not collision_free(start_pos, start_quat, with_human, outer, obstacles, num_carriers):
+        return None
+    if not collision_free(goal_pos, goal_quat, with_human, outer, obstacles, num_carriers):
+        return None
+
+    ta = [_Node(np.asarray(start_pos, dtype=float), np.asarray(start_quat, dtype=float))]
+    tb = [_Node(np.asarray(goal_pos, dtype=float), np.asarray(goal_quat, dtype=float))]
+    swapped = False
+    rng = np.random.default_rng(seed)
+
+    for _ in range(max_iter):
+        pos_rand, quat_rand = sample_guided(outer, rng)
+        idx_new = _extend(ta, pos_rand, quat_rand, with_human, outer, obstacles, num_carriers)
+        if idx_new is not None:
+            new_node = ta[idx_new]
+            idx_conn = _connect(tb, new_node.pos, new_node.quat, with_human, outer, obstacles, num_carriers)
+            if idx_conn is not None and _reached(tb[idx_conn], new_node.pos, new_node.quat):
+                return _build_path(ta, idx_new, tb, idx_conn, swapped)
+        ta, tb = tb, ta
+        swapped = not swapped
+
+    return None
