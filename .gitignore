@@ -2,3 +2,7 @@ docs/assets/
 .venv/
 __pycache__/
 *.pyc
+phase1/*.png
+phase1/*.gif
+phase2/*.png
+phase2/*.gif
