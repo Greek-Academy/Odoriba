@@ -306,6 +306,14 @@ class _Node:
 
 
 def _nearest(tree, pos, quat):
+    """treeの全ノードを線形走査して最近傍を探す。
+
+    既知の性能上の限界: これは木のサイズに対して線形で、extend/connect
+    のたびに呼ばれるため、反復回数が数千を超えるとRRT全体がO(n^2)で
+    重くなる(運搬者ありのオラクルはさらに1回あたりのコストも高い)。
+    KD-treeなどでの高速化はCLAUDE.mdの通り「性能が足りなくなってから」
+    でよいが、探索が数分単位で終わらない場合はまずここを疑う。
+    """
     dists = [g3.dist_se3(n.pos, n.quat, pos, quat, w=W_ROT) for n in tree]
     i = int(np.argmin(dists))
     return i, dists[i]
