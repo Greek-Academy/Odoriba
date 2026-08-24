@@ -36,7 +36,7 @@ N_STEPS = 8             # 段数
 # (Phase 1のEND_MARGINと同じ考え方)。
 BASE_LANDING_D = 300.0   # 下の(階段に入る前の)床の奥行き -- START用の余白
 LANDING_D = 300.0        # 上の踊り場の奥行き -- GOAL用の余白
-CEILING_CLEARANCE = 220.0  # 一番高い段の踏み面から天井までの高さ
+CEILING_CLEARANCE = 160.0  # 一番高い段の踏み面から天井までの高さ(古い建物の低い天井を想定)
 
 # 家具(ソファを想定。implementation-guide.mdの出発点の数値と揃える)
 FURN_L = 180.0   # 長辺
