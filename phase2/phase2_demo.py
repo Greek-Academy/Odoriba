@@ -408,3 +408,73 @@ def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
         swapped = not swapped
 
     return None
+
+
+# ---- START / GOAL ----
+# 下の床、上の踊り場それぞれの中央あたり。姿勢は水平(傾き0)で、
+# 家具の長軸を進行方向(y)に向けた基準姿勢。
+_BASE_QUAT = _base_yaw_quat().as_quat()
+_TOP_Z = N_STEPS * RISE
+_TOP_Y0 = BASE_LANDING_D + N_STEPS * TREAD
+START = (np.array([STAIR_WIDTH / 2, 150.0, FURN_H / 2]), _BASE_QUAT)
+GOAL = (np.array([STAIR_WIDTH / 2, _TOP_Y0 + 150.0, _TOP_Z + FURN_H / 2]), _BASE_QUAT)
+
+
+def path_min_clearance(path, with_human, outer, obstacles, num_carriers=None):
+    """見つかった経路上で最も厳しい(最小の)クリアランス(cm)。"""
+    if with_human:
+        return min(carriable_clearance(pos, q, outer, obstacles, num_carriers)[0] for pos, q in path)
+    return min(furniture_clearance(pos, q, outer, obstacles) for pos, q in path)
+
+
+if __name__ == "__main__":
+    import argparse
+    import time
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--carriers", type=int, choices=(1, 2), default=NUM_CARRIERS,
+        help="How many people carry the furniture: 1 (solo, trailing behind) "
+             "or 2 (one at each end). Default: %(default)s.")
+    parser.add_argument(
+        "--max-iter", type=int, default=3000,
+        help="RRT-Connect max iterations per search. Default: %(default)s.")
+    args = parser.parse_args()
+    num_carriers = args.carriers
+
+    outer, obstacles = build_stairs()
+
+    print(f"階段: 幅{STAIR_WIDTH:.0f}cm, 蹴上げ{RISE:.0f}cm x {N_STEPS}段, "
+          f"天井高{CEILING_CLEARANCE:.0f}cm / 家具: {FURN_L:.0f}x{FURN_W:.0f}x{FURN_H:.0f}cm / "
+          f"運搬者: {num_carriers}人")
+
+    # --- 姿勢単体のクリアランス(速い。RRTの前にまず数値で見る) ---
+    for label, (pos, quat) in (("START", START), ("GOAL", GOAL)):
+        bc = furniture_clearance(pos, quat, outer, obstacles)
+        cc, off = carriable_clearance(pos, quat, outer, obstacles, num_carriers=num_carriers)
+        print(f"  {label}: 箱単体クリアランス={bc:.1f}cm / 運搬者ありクリアランス={cc:.1f}cm")
+
+    # --- RRT-Connectで実際に経路を探す(box-onlyは数十秒、運搬者ありは
+    # もっとかかることがある) ---
+    print("\n箱単体の経路を探索中...")
+    t0 = time.time()
+    path_box = rrt_connect(START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
+                            max_iter=args.max_iter)
+    t1 = time.time()
+    found_box = path_box is not None
+    print(f"  {'PASS' if found_box else 'BLOCKED'}"
+          f"{f' (min clearance {path_min_clearance(path_box, False, outer, obstacles):.1f}cm)' if found_box else ''}"
+          f"  [{t1 - t0:.1f}s]")
+
+    print(f"\n運搬者あり({num_carriers}人)の経路を探索中...")
+    t0 = time.time()
+    path_human = rrt_connect(START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
+                              num_carriers=num_carriers, max_iter=args.max_iter)
+    t1 = time.time()
+    found_human = path_human is not None
+    print(f"  {'PASS' if found_human else 'BLOCKED'}"
+          f"{f' (min clearance {path_min_clearance(path_human, True, outer, obstacles, num_carriers):.1f}cm)' if found_human else ''}"
+          f"  [{t1 - t0:.1f}s]")
+
+    print("\n注意: RRTは確率的探索なので、BLOCKEDは「この試行回数では見つからなかった」"
+          "であり、Phase 1のグリッドBFSほど「絶対に経路が存在しない」とは言い切れない。")
