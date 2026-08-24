@@ -49,12 +49,14 @@ HUMAN_HEIGHT = 170.0  # 運搬者の身長
 CARRY_ARM = 30.0
 # 運搬者が取り得る、家具の長軸に対する横方向の立ち位置(Phase 1と同じ)。
 SIDE_OFFSETS = (-20.0, -10.0, 0.0, 10.0, 20.0)
-# 把持点の高さから運搬者の体の中心までの鉛直オフセット。実際には足元は
-# その場の段の高さで決まるが、正確な「どの段に足が乗るか」の計算は
-# まだ実装していない -- 把持点付近に体があるという近似で済ませている。
-# 段を上るときに縦方向の揺れがどれだけ効くかは未検証で、Phase 2 の
-# 既知の簡略化点。結果が実測と大きくずれたらここを見直す。
-GRIP_TO_TORSO_Z = -60.0
+# 把持点の高さから運搬者の体の中心までの鉛直オフセット。人は把持点
+# より高い位置に胴があるので正の値(把持点が低ければ屈んで持つ)。
+# 実際には足元はその場の段の高さで決まるが、正確な「どの段に足が
+# 乗るか」の計算はまだ実装していない -- 把持点付近に体があるという
+# 近似で済ませている。段を上るときに縦方向の揺れがどれだけ効くかは
+# 未検証で、Phase 2 の既知の簡略化点。結果が実測と大きくずれたら
+# ここを見直す。
+GRIP_TO_TORSO_Z = 50.0
 
 NUM_CARRIERS = 2
 
@@ -122,3 +124,87 @@ def furniture_world_points(pos, quat):
 def furniture_clearance(pos, quat, outer, obstacles):
     """この姿勢での家具単体(運搬者なし)のクリアランス(cm)。"""
     return shape_clearance_3d(furniture_world_points(pos, quat), outer, obstacles)
+
+
+def place_humans_3d(pos, quat, side_offset, num_carriers=None):
+    """与えられた横方向の立ち位置に対する、運搬者カプセルの中心。
+
+    Phase 1のplace_humansをそのまま3Dに拡張したもの: 把持点は家具の
+    長軸(ローカルx)の両端に置き、そこからCARRY_ARMだけ長軸方向に
+    外側へ、side_offsetだけ短軸(ローカルy)方向へずらす。鉛直方向
+    (ローカルz、家具が傾いていてもワールドzではなく家具のローカルz
+    を使う)には、GRIP_TO_TORSO_Zだけ下げて運搬者の胴体中心とする
+    -- 「手の高さのやや下に胴の中心がある」という近似(実測なし、
+    モジュールdocstring/GRIP_TO_TORSO_Zの説明を参照)。
+
+    num_carriers=2 (既定): 両端に1人ずつ。
+    num_carriers=1: 家具の後方(ローカルxが負の側)を1人で持つ。
+    """
+    num_carriers = NUM_CARRIERS if num_carriers is None else num_carriers
+    R = g3.rotmat_from_quat(quat)
+    pos = np.asarray(pos)
+    hl = FURN_L / 2
+
+    def grip_to_world(local_x_sign):
+        local = np.array([
+            local_x_sign * (hl + CARRY_ARM),
+            side_offset,
+            GRIP_TO_TORSO_Z,
+        ])
+        return pos + R @ local
+
+    h_back = grip_to_world(-1.0)
+    if num_carriers == 1:
+        return (h_back,)
+    h_front = grip_to_world(1.0)
+    return (h_front, h_back)
+
+
+def carrier_world_points(center):
+    """運搬者カプセル(縦向き円柱)の表面サンプル点(ワールド座標)。
+
+    円柱はワールド座標系で鉛直に立てる(家具が傾いていても、人は
+    重力に従って立つため、家具のローカル姿勢では回転させない)。
+    """
+    local = g3.cylinder_surface_sample_points(HUMAN_R, HUMAN_HEIGHT / 2, n_theta=10, n_h=3)
+    return local + np.asarray(center)
+
+
+def carriable_clearance(pos, quat, outer, obstacles, num_carriers=None):
+    """許容される運搬者の立ち位置全体の中で達成できる最良のクリアランス(cm)。
+
+    Phase 1のcarriable_clearanceと同じ考え方: SIDE_OFFSETSを総当たりし、
+    一番有利なものを残す。
+    """
+    bc = furniture_clearance(pos, quat, outer, obstacles)
+    if bc < 0:
+        return bc, None
+    best = -np.inf
+    best_offset = None
+    for off in SIDE_OFFSETS:
+        centers = place_humans_3d(pos, quat, off, num_carriers)
+        capsule_clearances = [
+            shape_clearance_3d(carrier_world_points(c), outer, obstacles)
+            for c in centers
+        ]
+        cand = min([bc] + capsule_clearances)
+        if cand > best:
+            best = cand
+            best_offset = off
+    return best, best_offset
+
+
+def best_human_positions(pos, quat, outer, obstacles, num_carriers=None):
+    """描画専用: 最良の立ち位置での運搬者カプセルの中心。"""
+    _, offset = carriable_clearance(pos, quat, outer, obstacles, num_carriers=num_carriers)
+    if offset is None:
+        offset = 0.0
+    return place_humans_3d(pos, quat, offset, num_carriers)
+
+
+def collision_free(pos, quat, with_human, outer, obstacles, num_carriers=None):
+    """プランナーが各状態に対して使う、唯一のYes/No判定(Phase 1と同じ役割)。"""
+    if with_human:
+        clearance, _ = carriable_clearance(pos, quat, outer, obstacles, num_carriers)
+        return clearance >= 0
+    return furniture_clearance(pos, quat, outer, obstacles) >= 0
