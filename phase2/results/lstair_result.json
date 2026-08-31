@@ -1133,5 +1133,31 @@
     20.0
    ]
   ]
+ },
+ "max_width_furniture_only": {
+  "max_w": 63.4,
+  "trials": [
+   [
+    60.1,
+    true
+   ],
+   [
+    65.2,
+    false
+   ],
+   [
+    62.7,
+    true
+   ],
+   [
+    64.0,
+    false
+   ],
+   [
+    63.4,
+    true
+   ]
+  ],
+  "note": "RRT2seeds\u3067\u898b\u3064\u304b\u308c\u3070PASS\u3002\u78ba\u7387\u7684\u63a2\u7d22\u306a\u306e\u3067\u4e0b\u632f\u308c\u3057\u5f97\u308b"
  }
 }
