@@ -265,6 +265,20 @@ def render_png(result, out_path):
     draw_case(ax_t_car, ax_s_car, path_car, True, outer, obstacles, num_carriers,
               worst=worst_car, worst_label=label_car)
 
+    # 幅の二分探索(--find-max-width)の結果があれば、左パネルに
+    # 「この階段なら幅◯cmまで入る」を注記する
+    if "max_width_furniture_only" in result:
+        mw = result["max_width_furniture_only"]["max_w"]
+        ax_t_box.text(0.97, 0.03,
+                      f"this staircase fits furniture\n"
+                      f"up to W = {mw:.0f}cm\n"
+                      f"(furniture alone, same L x H,\n"
+                      f" bisection over RRT runs)",
+                      transform=ax_t_box.transAxes, ha="right", va="bottom",
+                      fontsize=9, color="#205020",
+                      bbox=dict(boxstyle="round", facecolor="#eaf5ea",
+                                edgecolor="#88aa88"))
+
     st = meta["stair"]
     fu = meta["furniture"]
     verdict = f"furniture alone {'PASS' if box_found else 'BLOCKED'} / " \
