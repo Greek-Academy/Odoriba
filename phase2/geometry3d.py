@@ -74,6 +74,20 @@ def obb_sdf(point, center, rotmat, half_extents):
     return outside + inside
 
 
+def obb_sdf_points(points, center, rotmat, half_extents):
+    """obb_sdfの点群版。points: (N, 3) -> 各点の符号付き距離 (N,)。
+
+    RRTは同じ形状の数十点をまとめて評価するので、点ごとにPythonの
+    ループを回すと探索全体が遅くなる。numpyのブロードキャストで
+    一括評価する(結果はobb_sdfをN回呼ぶのと同じ)。
+    """
+    local = (np.asarray(points) - center) @ rotmat  # 各行 = rotmat.T @ (p - center)
+    q = np.abs(local) - half_extents
+    outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
+    inside = np.minimum(np.max(q, axis=1), 0.0)
+    return outside + inside
+
+
 def obb_corners(center, rotmat, half_extents):
     """OBBの8つの角(ワールド座標)。描画・可視化用。"""
     signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])

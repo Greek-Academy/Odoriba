@@ -90,6 +90,19 @@ def build_stairs():
     return outer, obstacles
 
 
+def _outer_boxes(outer):
+    """外枠の指定を直方体のリストに正規化する。
+
+    Phase 2当初は外枠(自由空間の輪郭)は直方体1つだったが、L字階段の
+    ように「複数の直方体の合併(union)」で表したい環境が出てきた。
+    後方互換のため、単一の(center, rotmat, half)タプルとリストの
+    両方を受け付ける。
+    """
+    if isinstance(outer, (list, tuple)) and len(outer) > 0 and isinstance(outer[0], (list, tuple)):
+        return list(outer)
+    return [outer]
+
+
 def signed_clearance_3d(point, outer, obstacles):
     """点から環境境界までの符号付き距離(cm)。
 
@@ -97,20 +110,28 @@ def signed_clearance_3d(point, outer, obstacles):
     各ステップにどれだけ食い込んでいるか(食い込んでいれば-)まで、
     一番厳しい値を返す。
     """
-    outer_center, outer_rot, outer_half = outer
-    # 外枠の内側にいる余裕 = -(外枠に対するSDF)。外側にいればマイナス
-    # (どれだけはみ出しているか)、内側にいればプラス(壁までの距離)。
-    margin = -g3.obb_sdf(point, outer_center, outer_rot, outer_half)
-    worst = margin
-    for center, rot, half in obstacles:
-        d = g3.obb_sdf(point, center, rot, half)  # 障害物の外なら+、めり込んでいれば-
-        worst = min(worst, d)
-    return worst
+    return shape_clearance_3d(np.asarray(point).reshape(1, 3), outer, obstacles)
 
 
 def shape_clearance_3d(points, outer, obstacles):
-    """点群(形状の表面サンプル)における最悪(最小)のクリアランス。"""
-    return min(signed_clearance_3d(p, outer, obstacles) for p in points)
+    """点群(形状の表面サンプル)における最悪(最小)のクリアランス。
+
+    外枠が複数の直方体の合併の場合、内側の余裕は「各直方体への
+    -SDFの最大値」で近似する。これは合併領域の真の境界までの距離の
+    下界(直方体同士の重なり付近で過小評価)になるが、符号は正しい
+    (合併の内側なら必ず正、外側なら必ず負)ので、衝突判定としては
+    安全側の近似。Phase 1のL字廊下は正確な多角形距離を使っていたが、
+    3Dの合併の正確な距離は割に合わないのでここは近似で通す。
+    """
+    pts = np.asarray(points)
+    inner = np.max(
+        np.stack([-g3.obb_sdf_points(pts, c, r, h) for c, r, h in _outer_boxes(outer)]),
+        axis=0)
+    worst = inner
+    for center, rot, half in obstacles:
+        # 障害物の外なら+、めり込んでいれば-
+        worst = np.minimum(worst, g3.obb_sdf_points(pts, center, rot, half))
+    return float(np.min(worst))
 
 
 def furniture_world_points(pos, quat):
@@ -270,9 +291,14 @@ def sample_guided(outer, rng, p=0.7, pos_noise=15.0, rot_noise_deg=10.0):
         pitch = target_pitch + np.radians(rng.normal(0.0, rot_noise_deg))
         yaw_noise = np.radians(rng.normal(0.0, rot_noise_deg))
         roll_noise = np.radians(rng.normal(0.0, rot_noise_deg))
+        # 長軸はローカルx。基準姿勢Rz(90)で長軸はワールド+yを向くので、
+        # 長軸を勾配に沿って持ち上げる(ピッチさせる)のはローカルyまわりの
+        # 回転Ry(-pitch)。かつてはここがRx(pitch)になっていたが、Rxは長軸
+        # 自身まわりの回転(=ロール)で、長軸の仰角は0度のまま変わらない
+        # (ノイズ0で数値確認済み)。Ry(-pitch)なら仰角がちょうどpitchになる。
         rot = (Rotation.from_euler("z", 90 + np.degrees(yaw_noise), degrees=True)
-               * Rotation.from_euler("x", np.degrees(pitch), degrees=True)
-               * Rotation.from_euler("y", np.degrees(roll_noise), degrees=True))
+               * Rotation.from_euler("y", -np.degrees(pitch), degrees=True)
+               * Rotation.from_euler("x", np.degrees(roll_noise), degrees=True))
         quat = rot.as_quat()
     else:
         pos = rng.uniform(0.0, outer_half * 2)
@@ -280,18 +306,23 @@ def sample_guided(outer, rng, p=0.7, pos_noise=15.0, rot_noise_deg=10.0):
     return pos, quat
 
 
-def edge_valid(pos1, quat1, pos2, quat2, with_human, outer, obstacles, num_carriers=None):
+def edge_valid(pos1, quat1, pos2, quat2, with_human, outer, obstacles, num_carriers=None,
+               validator=None):
     """2状態間を補間し、刻み幅EDGE_RESごとに衝突チェックする。
 
     端点だけ見ると、壁を突き抜ける経路が「有効」と判定されてしまう
     (Phase 1のimplementation-guide.mdで最初に触れている罠と同じ)。
+
+    validatorはcollision_freeと同じシグネチャの状態判定関数。環境側が
+    独自の制約(例: L字階段の傾き上限)を足したいときに差し替える。
     """
+    check = collision_free if validator is None else validator
     d = g3.dist_se3(pos1, quat1, pos2, quat2, w=W_ROT)
     n = max(2, int(d / EDGE_RES))
     for i in range(n + 1):
         t = i / n
         p, q = g3.interpolate_se3(pos1, quat1, pos2, quat2, t)
-        if not collision_free(p, q, with_human, outer, obstacles, num_carriers):
+        if not check(p, q, with_human, outer, obstacles, num_carriers):
             return False
     return True
 
@@ -326,25 +357,29 @@ def _steer(pos_from, quat_from, pos_to, quat_to):
     return g3.interpolate_se3(pos_from, quat_from, pos_to, quat_to, t)
 
 
-def _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers):
+def _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
+            validator=None):
     """treeを1歩だけpos_target/quat_targetへ伸ばす。伸びたら新しいノード
     のインデックスを、伸びなければNoneを返す。"""
     i_near, _ = _nearest(tree, pos_target, quat_target)
     near = tree[i_near]
     pos_new, quat_new = _steer(near.pos, near.quat, pos_target, quat_target)
-    if not edge_valid(near.pos, near.quat, pos_new, quat_new, with_human, outer, obstacles, num_carriers):
+    if not edge_valid(near.pos, near.quat, pos_new, quat_new, with_human, outer, obstacles,
+                      num_carriers, validator=validator):
         return None
     tree.append(_Node(pos_new, quat_new, i_near))
     return len(tree) - 1
 
 
-def _connect(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers):
+def _connect(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
+             validator=None):
     """targetに向かって、ブロックされるかtargetに届くまでextendを繰り返す
     (RRT-Connectの"connect"ヒューリスティック: 1本のツリーを毎回1歩ずつ
     伸ばすより、狭い通路を素早く抜けやすい)。"""
     last = None
     while True:
-        idx = _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers)
+        idx = _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
+                      validator=validator)
         if idx is None:
             return last
         last = idx
@@ -362,7 +397,16 @@ def _reached(node, pos, quat):
 
 
 def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
-    """2本のツリーが繋がった点から、start->goalの状態列を組み立てる。"""
+    """2本のツリーが繋がった点から、start->goalの状態列を組み立てる。
+
+    path_a + path_b は「tree_aの根 -> 合流点 -> tree_bの根」の順に
+    連続した列になる。swapped=False なら tree_a の根がstartなので
+    そのまま、swapped=True なら tree_a の根はgoal(木を入れ替えた
+    奇数回目)なので全体を逆順にする。かつては前半と後半を
+    入れ替えるだけ(path_b + path_a)にしていたが、それだと
+    「合流点->start」+「goal->合流点」という繋がらない列になる
+    (運搬者ありの経路を描画して発覚)。
+    """
     path_a = []
     i = idx_a
     while i is not None:
@@ -378,44 +422,60 @@ def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
         path_b.append((n.pos, n.quat))
         i = n.parent
 
+    combined = path_a + path_b
     if swapped:
-        path_a, path_b = path_b, path_a
-    return path_a + path_b
+        combined.reverse()
+    return combined
 
 
 def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
-                 max_iter=3000, seed=0):
+                 max_iter=3000, seed=0, sampler=None, validator=None, return_trees=False):
     """RRT-Connect本体。startとgoalそれぞれからツリーを伸ばし、交互に
     相手のツリーの新しいノードへconnectを試みる(implementation-guide.md
     のrrt_connectと同じ構造)。
 
     見つかればstart->goalの(pos, quat)状態列を、見つからなければ
     Noneを返す。
+
+    samplerはrngを受け取り(pos, quat)を返す関数。環境ごとの骨格誘導
+    (L字階段の中心線+コーナー回転ヒント等)を差し替えられるようにする。
+    既定はこのファイルの直線階段用sample_guided。
+    validatorはedge_valid参照(既定はcollision_free)。
+    return_trees=Trueなら(path, start_tree)を返す。pathがNoneのとき、
+    start側ツリーから「どこまで到達できたか」(best-effort)を呼び出し側が
+    再構成できるようにするため。
     """
     start_pos, start_quat = start
     goal_pos, goal_quat = goal
-    if not collision_free(start_pos, start_quat, with_human, outer, obstacles, num_carriers):
-        return None
-    if not collision_free(goal_pos, goal_quat, with_human, outer, obstacles, num_carriers):
-        return None
+    check = collision_free if validator is None else validator
+    if sampler is None:
+        sampler = lambda rng: sample_guided(outer, rng)
+    start_tree = [_Node(np.asarray(start_pos, dtype=float), np.asarray(start_quat, dtype=float))]
+    if not check(start_pos, start_quat, with_human, outer, obstacles, num_carriers):
+        return (None, start_tree) if return_trees else None
+    if not check(goal_pos, goal_quat, with_human, outer, obstacles, num_carriers):
+        return (None, start_tree) if return_trees else None
 
-    ta = [_Node(np.asarray(start_pos, dtype=float), np.asarray(start_quat, dtype=float))]
+    ta = start_tree
     tb = [_Node(np.asarray(goal_pos, dtype=float), np.asarray(goal_quat, dtype=float))]
     swapped = False
     rng = np.random.default_rng(seed)
 
     for _ in range(max_iter):
-        pos_rand, quat_rand = sample_guided(outer, rng)
-        idx_new = _extend(ta, pos_rand, quat_rand, with_human, outer, obstacles, num_carriers)
+        pos_rand, quat_rand = sampler(rng)
+        idx_new = _extend(ta, pos_rand, quat_rand, with_human, outer, obstacles, num_carriers,
+                          validator=validator)
         if idx_new is not None:
             new_node = ta[idx_new]
-            idx_conn = _connect(tb, new_node.pos, new_node.quat, with_human, outer, obstacles, num_carriers)
+            idx_conn = _connect(tb, new_node.pos, new_node.quat, with_human, outer, obstacles,
+                                num_carriers, validator=validator)
             if idx_conn is not None and _reached(tb[idx_conn], new_node.pos, new_node.quat):
-                return _build_path(ta, idx_new, tb, idx_conn, swapped)
+                path = _build_path(ta, idx_new, tb, idx_conn, swapped)
+                return (path, start_tree) if return_trees else path
         ta, tb = tb, ta
         swapped = not swapped
 
-    return None
+    return (None, start_tree) if return_trees else None
 
 
 # ---- START / GOAL ----
