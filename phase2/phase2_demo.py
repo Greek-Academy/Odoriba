@@ -270,9 +270,14 @@ def sample_guided(outer, rng, p=0.7, pos_noise=15.0, rot_noise_deg=10.0):
         pitch = target_pitch + np.radians(rng.normal(0.0, rot_noise_deg))
         yaw_noise = np.radians(rng.normal(0.0, rot_noise_deg))
         roll_noise = np.radians(rng.normal(0.0, rot_noise_deg))
+        # 長軸はローカルx。基準姿勢Rz(90)で長軸はワールド+yを向くので、
+        # 長軸を勾配に沿って持ち上げる(ピッチさせる)のはローカルyまわりの
+        # 回転Ry(-pitch)。かつてはここがRx(pitch)になっていたが、Rxは長軸
+        # 自身まわりの回転(=ロール)で、長軸の仰角は0度のまま変わらない
+        # (ノイズ0で数値確認済み)。Ry(-pitch)なら仰角がちょうどpitchになる。
         rot = (Rotation.from_euler("z", 90 + np.degrees(yaw_noise), degrees=True)
-               * Rotation.from_euler("x", np.degrees(pitch), degrees=True)
-               * Rotation.from_euler("y", np.degrees(roll_noise), degrees=True))
+               * Rotation.from_euler("y", -np.degrees(pitch), degrees=True)
+               * Rotation.from_euler("x", np.degrees(roll_noise), degrees=True))
         quat = rot.as_quat()
     else:
         pos = rng.uniform(0.0, outer_half * 2)
