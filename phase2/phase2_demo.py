@@ -397,7 +397,16 @@ def _reached(node, pos, quat):
 
 
 def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
-    """2本のツリーが繋がった点から、start->goalの状態列を組み立てる。"""
+    """2本のツリーが繋がった点から、start->goalの状態列を組み立てる。
+
+    path_a + path_b は「tree_aの根 -> 合流点 -> tree_bの根」の順に
+    連続した列になる。swapped=False なら tree_a の根がstartなので
+    そのまま、swapped=True なら tree_a の根はgoal(木を入れ替えた
+    奇数回目)なので全体を逆順にする。かつては前半と後半を
+    入れ替えるだけ(path_b + path_a)にしていたが、それだと
+    「合流点->start」+「goal->合流点」という繋がらない列になる
+    (運搬者ありの経路を描画して発覚)。
+    """
     path_a = []
     i = idx_a
     while i is not None:
@@ -413,9 +422,10 @@ def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
         path_b.append((n.pos, n.quat))
         i = n.parent
 
+    combined = path_a + path_b
     if swapped:
-        path_a, path_b = path_b, path_a
-    return path_a + path_b
+        combined.reverse()
+    return combined
 
 
 def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
