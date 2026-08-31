@@ -443,6 +443,54 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
     return results
 
 
+def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
+                             max_iter=6000, seeds=(0, 1)):
+    """家具単体で通る最大の家具幅(cm)を二分探索する。
+
+    phase1のfind_critical_widthと同じグローバル上書きパターンで、
+    FURN_Wを一時的に変えながらRRTを走らせる。RRTは確率的なので、
+    seedsのいずれかで経路が見つかればその幅は「通る」、どのseedでも
+    見つからなければ「通らない」扱いにする(見つけ損ないは上限を
+    小さめに見積もる側、つまり安全側に倒れる)。
+
+    ボトルネック掃引(sweep_capacity)で代用しない理由: 掃引は位置ごとに
+    「最良の姿勢」を取るため、踊り場での回転の途中で必ず通る中間姿勢の
+    ピンチが見えず、幅の上限を過大評価する。
+
+    戻り値: (max_w, trials)  trials = [(w, found), ...]
+    """
+    global FURN_W
+    orig = FURN_W
+    if lo is None:
+        lo = FURN_W  # 呼び出し時点の幅で通ることが分かっている前提
+    if hi is None:
+        # 断面対角=階段幅となる解析上限(これ以上は垂直に立てても
+        # 幅の帯の中で回せない)に、L字ポケットの分の余裕を足した値
+        hi = float(np.sqrt(STAIR_WIDTH ** 2 - FURN_H ** 2)) + 8.0
+    trials = []
+    try:
+        while hi - lo > tol:
+            w = round((lo + hi) / 2.0, 1)
+            FURN_W = w
+            found = False
+            for sd in seeds:
+                path = p.rrt_connect(
+                    START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
+                    max_iter=max_iter, seed=sd,
+                    sampler=make_sampler(with_human=False), validator=state_valid)
+                if path is not None:
+                    found = True
+                    break
+            trials.append((w, found))
+            if found:
+                lo = w
+            else:
+                hi = w
+    finally:
+        FURN_W = orig
+    return lo, trials
+
+
 # ---- START / GOAL ----
 _YAW90 = _pose(90.0, 0.0).as_quat()   # 長軸を+y(下廊下の進行方向)へ
 _YAW0 = _pose(0.0, 0.0).as_quat()     # 長軸を+x(上廊下の進行方向)へ
@@ -506,6 +554,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--skip-sweep", action="store_true",
                         help="ボトルネック掃引を省く(動作確認用)")
+    parser.add_argument("--find-max-width", action="store_true",
+                        help="家具単体で通る最大の家具幅を二分探索し、"
+                             "既存の結果JSONに追記して終了する")
     parser.add_argument("--out", default=os.path.join("results", "lstair_result.json"))
     args = parser.parse_args()
     num_carriers = args.carriers
@@ -514,6 +565,27 @@ if __name__ == "__main__":
     print(f"L字階段: 幅{STAIR_WIDTH:.0f}cm, 蹴上げ{RISE:.0f}cm x ({N_STEPS1}+{N_STEPS2})段, "
           f"踊り場{STAIR_WIDTH:.0f}x{STAIR_WIDTH:.0f}cm / "
           f"家具: {FURN_L:.0f}x{FURN_W:.0f}x{FURN_H:.0f}cm / 運搬者: {num_carriers}人")
+
+    if args.find_max_width:
+        import sys
+        with open(args.out) as f:
+            result = json.load(f)
+        print("\n家具単体で通る最大幅を二分探索中(1回のRRTに数十秒かかる)...")
+        t0 = time.time()
+        max_w, trials = find_max_furniture_width(outer, obstacles)
+        for w, ok in trials:
+            print(f"  幅{w:5.1f}cm: {'PASS' if ok else 'BLOCKED'}")
+        print(f"  -> この階段なら(長さ{FURN_L:.0f}・高さ{FURN_H:.0f}の家具単体は)"
+              f"幅{max_w:.0f}cmまで入る [{time.time() - t0:.0f}s]")
+        result["max_width_furniture_only"] = {
+            "max_w": float(max_w),
+            "trials": [[float(w), bool(ok)] for w, ok in trials],
+            "note": "RRT2seedsで見つかればPASS。確率的探索なので下振れし得る",
+        }
+        with open(args.out, "w") as f:
+            json.dump(result, f, indent=1)
+        print(f"updated {args.out}")
+        sys.exit(0)
 
     for label, (pos, quat) in (("START", START), ("GOAL", GOAL)):
         bc = furniture_clearance(pos, quat, outer, obstacles)
