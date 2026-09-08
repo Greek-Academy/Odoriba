@@ -25,7 +25,7 @@ import phase2_lstair as L
 import phase2_lstair_viz as viz
 
 
-def interpolate_path(path, step_cm=8.0):
+def interpolate_path(path, w_rot, step_cm=8.0):
     """粗い経路(RRTのノード列)をdist_se3の距離でおおよそ等間隔に補間する。
 
     phase1_gifのinterpolate_pathと同じ役割。位置は線形、姿勢はSlerp
@@ -33,7 +33,7 @@ def interpolate_path(path, step_cm=8.0):
     """
     dense = [path[0]]
     for (p1, q1), (p2, q2) in zip(path[:-1], path[1:]):
-        d = g3.dist_se3(p1, q1, p2, q2, w=L.p.W_ROT)
+        d = g3.dist_se3(p1, q1, p2, q2, w=w_rot)
         n = max(1, int(np.ceil(d / step_cm)))
         for i in range(1, n + 1):
             dense.append(g3.interpolate_se3(p1, q1, p2, q2, i / n))
@@ -52,8 +52,11 @@ def build_gif(result, out_path, fps=12, step_cm=8.0, hold_frames=18):
     path_box = viz.parse_path(box["path"] if box_found else box["best_effort_path"])
     path_car = viz.parse_path(car["path"] if car_found else car["best_effort_path"])
 
-    dense_box = interpolate_path(path_box, step_cm)
-    dense_car = interpolate_path(path_car, step_cm)
+    # 補間の刻みは、経路を作ったときと同じ距離の物差し(w_rot)で切る。
+    # 値は結果JSONのmetaに記録されているものを使う。
+    w_rot = meta.get("planner", {}).get("w_rot", L.W_ROT)
+    dense_box = interpolate_path(path_box, w_rot, step_cm)
+    dense_car = interpolate_path(path_car, w_rot, step_cm)
     n_box, n_car = len(dense_box), len(dense_car)
     total = max(n_box, n_car) + hold_frames
 
