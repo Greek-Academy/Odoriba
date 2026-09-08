@@ -45,6 +45,7 @@ python phase2_lstair.py --find-max-length   # 運搬者ありで通る最大長�
 cd phase2
 python phase2_lstair_viz.py    # 比較PNG (phase2_lstair.png)
 python phase2_lstair_gif.py    # アニメーションGIF (phase2_lstair.gif)
+python phase2_lstair_3d.py     # 3Dビューア (phase2_lstair_3d.html; ブラウザで開いて回す)
 ```
 
 画像・GIFはgit管理しない(`.gitignore`)。JSONがコミットされているので、
