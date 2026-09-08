@@ -16,7 +16,7 @@
 - [x] **メッシュ→SDF受け口**: `build_lstairs` の環境をメッシュ（OBJ/PLY）として書き出し、trimesh で読み込んで点→メッシュ距離で衝突判定する `validator` を作り、既存の直方体方式と判定結果が一致することを確認する（iPhone LiDAR スキャンの受け入れ準備。open3d が入らない環境では trimesh のみで可） (2026-09-08, feature/mesh-sdf-input)
 - [x] **GIF・3Dビューアへの数字の反映**: 比較PNGにある「2人なら長さ162cmまで」「踊り場で余裕8cm」の注記を、GIF と 3Dビューア（HTML）にも入れて3つの成果物の情報を揃える (2026-09-08, feature/viz-sync-numbers)
 - [ ] **`_nearest` のKD-tree化**: 探索の反復回数を増やしたときのO(n^2)を解消する（scipy.spatial.cKDTree。SE(3)距離の回転項は近似でよい。導入前後で同一seedの結果が変わらないことを確認）
-- [ ] **`p.W_ROT` 上書きの引数化**: `phase2_lstair.py` が import 時に `phase2_demo.W_ROT` を書き換えている副作用を、`rrt_connect` の引数（または設定オブジェクト）に置き換える
+- [x] **`p.W_ROT` 上書きの引数化**: `phase2_lstair.py` が import 時に `phase2_demo.W_ROT` を書き換えている副作用を、`rrt_connect` の引数（または設定オブジェクト）に置き換える (2026-09-08, feature/wrot-param)
 - [x] **ヒアリング質問リストのドキュメント化**: 引っ越し業者への質問を `docs/interview-questions.md` に整理する。傾きの限界（仮定55度）・持てる高さ（仮定10〜190cm）・踊り場での回し方・「長さ何cmまでならいける」の現場判断（シミュレータの162cmの答え合わせ）を必ず含める
 
 ## 完了済み
