@@ -68,6 +68,15 @@ def build_gif(result, out_path, fps=12, step_cm=8.0, hold_frames=18):
                 f"{st['landing'][1]:.0f}cm) / furniture "
                 f"{fu['L']:.0f}x{fu['W']:.0f}x{fu['H']:.0f}cm")
 
+    # 結論の数字(踊り場で余裕8cm/あと29cm、上限サイズ)をPNGと揃えて
+    # 下端に載せる。出典はJSON一本(phase2_lstair.result_summary_lines)。
+    # figのテキストはax.clear()で消えないので一度だけ置けばよい。
+    summary = L.result_summary_lines(result)
+    if summary:
+        fig.text(0.5, 0.015, "\n".join(summary), ha="center", va="bottom",
+                 fontsize=10, color="#404040",
+                 bbox=dict(boxstyle="round", facecolor="#f4f4f4", edgecolor="#c0c0c0"))
+
     def render(frame_i):
         for ax in axes.ravel():
             ax.clear()  # matplotlibに部分再描画はないので毎フレーム全部描き直す
@@ -102,7 +111,8 @@ def build_gif(result, out_path, fps=12, step_cm=8.0, hold_frames=18):
                           num_carriers, color=c_color, alpha=0.65 if stuck else 0.5)
 
         fig.suptitle(suptitle, fontsize=12)
-        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        # rectの下端は下端の注記(fig.text)のぶん空けておく
+        fig.tight_layout(rect=(0, 0.07 if summary else 0, 1, 0.95))
 
     anim = animation.FuncAnimation(fig, render, frames=total, interval=1000 / fps)
     anim.save(out_path, writer=animation.PillowWriter(fps=fps))
