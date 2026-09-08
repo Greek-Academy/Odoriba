@@ -232,7 +232,14 @@ def render_png(result, out_path):
     box_title = "Furniture only: "
     if box_found:
         mc, _ = L.path_min_clearance_lstair(path_box, False, outer, obstacles)
-        box_title += f"PASS (min clearance {mc + 0.0:.1f}cm)"  # +0.0で-0.0表記を防ぐ
+        # 最小クリアランスは床への接地(=0cm)で決まりがちで、そのまま
+        # 「余裕0.0cm」と書くと壁ギリギリと誤読される。接地由来である
+        # ことをタイトルで明示する(床接触を除いた横方向余裕への置き換えは
+        # 別途)。
+        if mc + 0.0 < 0.5:
+            box_title += "PASS (min clearance 0cm = floor contact while sliding)"
+        else:
+            box_title += f"PASS (min clearance {mc + 0.0:.1f}cm)"  # +0.0で-0.0表記を防ぐ
     else:
         box_title += "BLOCKED (not found)"
     path_car = parse_path(car["path"] if car_found else car["best_effort_path"])
@@ -278,6 +285,22 @@ def render_png(result, out_path):
                       fontsize=9, color="#205020",
                       bbox=dict(boxstyle="round", facecolor="#eaf5ea",
                                 edgecolor="#88aa88"))
+
+    # 長さの二分探索(--find-max-length)の結果があれば、右パネルに
+    # 「◯人で運ぶなら長さ◯cmまで」を注記する(運搬者ありの上限サイズ、
+    # PRDの本命の出力)
+    if "max_length_with_carriers" in result:
+        ml = result["max_length_with_carriers"]
+        if ml["max_l"] is not None:
+            ax_t_car.text(0.97, 0.03,
+                          f"carried by {ml['num_carriers']} people, this staircase\n"
+                          f"fits furniture up to L = {ml['max_l']:.0f}cm\n"
+                          f"(same W x H; furniture alone passes\n"
+                          f" even at L = {meta['furniture']['L']:.0f}cm)",
+                          transform=ax_t_car.transAxes, ha="right", va="bottom",
+                          fontsize=9, color="#5a2020",
+                          bbox=dict(boxstyle="round", facecolor="#f7ecec",
+                                    edgecolor="#bb8888"))
 
     st = meta["stair"]
     fu = meta["furniture"]
