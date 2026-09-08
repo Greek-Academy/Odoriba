@@ -1159,5 +1159,40 @@
    ]
   ],
   "note": "RRT2seeds\u3067\u898b\u3064\u304b\u308c\u3070PASS\u3002\u78ba\u7387\u7684\u63a2\u7d22\u306a\u306e\u3067\u4e0b\u632f\u308c\u3057\u5f97\u308b"
+ },
+ "max_length_with_carriers": {
+  "max_l": 161.7,
+  "num_carriers": 2,
+  "trials": [
+   [
+    130.0,
+    true
+   ],
+   [
+    165.0,
+    false
+   ],
+   [
+    147.5,
+    true
+   ],
+   [
+    156.2,
+    true
+   ],
+   [
+    160.6,
+    true
+   ],
+   [
+    162.8,
+    false
+   ],
+   [
+    161.7,
+    true
+   ]
+  ],
+  "note": "RRT2seeds\u3067\u898b\u3064\u304b\u308c\u3070PASS\u3002\u78ba\u7387\u7684\u63a2\u7d22\u306a\u306e\u3067\u4e0b\u632f\u308c\u3057\u5f97\u308b"
  }
 }
