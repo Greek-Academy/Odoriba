@@ -46,8 +46,11 @@ import phase2_demo as p
 # その結果、edge_valid(刻み幅EDGE_RES=4cm)が90度の回転エッジを
 # 3点しかチェックせず、コーナーの回転で壁を抜ける経路を「有効」と
 # 誤判定し得る。直線階段(回転がほぼない)では実害が出なかったが、
-# 踊り場の90度旋回が主役のこの環境では致命的なので上書きする。
-p.W_ROT = 60.0
+# 踊り場の90度旋回が主役のこの環境では致命的。以前はここで
+# p.W_ROT を上書きしていたが、importの副作用(このモジュールを読む
+# だけで直線階段デモの挙動が変わる)を避けるため、rrt_connectの
+# w_rot引数として都度渡す。
+W_ROT = 60.0
 
 # ---- パラメータ(cm) ----
 # 階段は実測前の仮値(建築基準法ぎりぎりではなく、ごく普通の戸建て
@@ -476,7 +479,7 @@ def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
             for sd in seeds:
                 path = p.rrt_connect(
                     START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
-                    max_iter=max_iter, seed=sd,
+                    max_iter=max_iter, seed=sd, w_rot=W_ROT,
                     sampler=make_sampler(with_human=False), validator=state_valid)
                 if path is not None:
                     found = True
@@ -517,7 +520,7 @@ def find_max_furniture_length(outer, obstacles, num_carriers=None, tol=2.0,
         for sd in seeds:
             path = p.rrt_connect(
                 START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
-                num_carriers=num_carriers, max_iter=max_iter, seed=sd,
+                num_carriers=num_carriers, max_iter=max_iter, seed=sd, w_rot=W_ROT,
                 sampler=make_sampler(with_human=True), validator=state_valid)
             if path is not None:
                 return True
@@ -678,7 +681,7 @@ def result_meta(num_carriers, max_iter, seed):
                     "leg_clear": LEG_CLEAR,
                     "reach": [REACH_MIN, REACH_MAX], "max_tilt_deg": MAX_TILT_DEG,
                     "num_carriers": num_carriers},
-        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": p.W_ROT},
+        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": W_ROT},
     }
 
 
@@ -797,7 +800,7 @@ if __name__ == "__main__":
     t0 = time.time()
     path_box, tree_box = p.rrt_connect(
         START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
-        max_iter=args.max_iter, seed=args.seed,
+        max_iter=args.max_iter, seed=args.seed, w_rot=W_ROT,
         sampler=make_sampler(with_human=False), validator=state_valid, return_trees=True)
     dt_box = time.time() - t0
     if path_box is not None:
@@ -814,7 +817,7 @@ if __name__ == "__main__":
     t0 = time.time()
     path_h, tree_h = p.rrt_connect(
         START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
-        num_carriers=num_carriers, max_iter=args.max_iter, seed=args.seed,
+        num_carriers=num_carriers, max_iter=args.max_iter, seed=args.seed, w_rot=W_ROT,
         sampler=make_sampler(with_human=True), validator=state_valid, return_trees=True)
     dt_h = time.time() - t0
     if path_h is not None:
