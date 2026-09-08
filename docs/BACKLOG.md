@@ -21,6 +21,8 @@
 
 ## 完了済み
 
+- [x] 定番家具カタログの一斉判定(catalog.py、7種の一覧表) (2026-09-08, feature/furniture-catalog)
+
 - [x] L字階段（踊り場）の環境・保持拘束付きオラクル・可視化 (2026-09-01, feature/l-shaped-staircase)
 - [x] 運搬者ありの上限長さ二分探索 --find-max-length（2人なら162cmまで） (2026-09-08, feature/max-length-search)
 - [x] 3Dビューア plotly→HTML (2026-09-08, feature/lstair-3d-viewer)
