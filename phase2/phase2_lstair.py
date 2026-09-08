@@ -568,6 +568,51 @@ def best_effort_path(tree):
     return path
 
 
+def horizontal_clearance_points(points, outer, obstacles):
+    """床・天井方向を除いた「横方向の余裕」(cm)。点群の最悪値を返す。
+
+    家具は床に接して滑るため、通常のクリアランス(全方向の符号付き
+    距離)は経路上ほぼ常に0になり、「通る場合の余裕◯cm」の数字として
+    意味をなさない。ここでは各点について「同じ高さのまま水平に
+    どれだけ動かすと壁・段に当たるか」を測る:
+
+      - 障害物は、その点のzが直方体のz範囲に(端を除いて)入っている
+        場合だけ、xy平面での2D符号付き距離を数える。z範囲外の段は
+        水平移動では当たらないので無視(家具が段の上面に載っている
+        だけの接触も、z=上面ちょうどなので除外される)
+      - 外枠(合併)は、zが範囲内の直方体のxy矩形の「内側の余裕」の最大値
+
+    build_lstairsの環境がすべて軸平行の直方体(aabb)であることを
+    前提にした実装(回転した直方体を混ぜる場合は要拡張)。
+    """
+    eps = 1e-6
+    worst = np.inf
+    for x, y, z in np.asarray(points):
+        inner = -np.inf
+        for c, _, h in outer:
+            if abs(z - c[2]) <= h[2]:
+                m = min(x - (c[0] - h[0]), (c[0] + h[0]) - x,
+                        y - (c[1] - h[1]), (c[1] + h[1]) - y)
+                inner = max(inner, m)
+        v = inner
+        for c, _, h in obstacles:
+            if abs(z - c[2]) < h[2] - eps:
+                qx = max((c[0] - h[0]) - x, x - (c[0] + h[0]))
+                qy = max((c[1] - h[1]) - y, y - (c[1] + h[1]))
+                d = float(np.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0))
+                v = min(v, d)
+        worst = min(worst, v)
+    return float(worst)
+
+
+def path_min_horizontal_clearance(path, outer, obstacles):
+    """経路上で最も厳しい横方向の余裕(cm)と、そのインデックス(家具のみ)。"""
+    vals = [horizontal_clearance_points(furniture_points(pos, q), outer, obstacles)
+            for pos, q in path]
+    i = int(np.argmin(vals))
+    return vals[i], i
+
+
 def path_min_clearance_lstair(path, with_human, outer, obstacles, num_carriers=None):
     """経路上で最も厳しい(最小の)クリアランス(cm)とそのインデックス。"""
     vals = []
@@ -615,6 +660,10 @@ if __name__ == "__main__":
     parser.add_argument("--find-max-length", action="store_true",
                         help="運搬者ありで通る最大の家具長さを二分探索し、"
                              "既存の結果JSONに追記して終了する")
+    parser.add_argument("--sweep-box", action="store_true",
+                        help="家具単体のボトルネック掃引(通る場合の「最も狭い"
+                             "場所で余裕◯cm」)を実行し、既存の結果JSONに追記して"
+                             "終了する")
     parser.add_argument("--out", default=os.path.join("results", "lstair_result.json"))
     args = parser.parse_args()
     num_carriers = args.carriers
@@ -639,6 +688,32 @@ if __name__ == "__main__":
             "max_w": float(max_w),
             "trials": [[float(w), bool(ok)] for w, ok in trials],
             "note": "RRT2seedsで見つかればPASS。確率的探索なので下振れし得る",
+        }
+        with open(args.out, "w") as f:
+            json.dump(result, f, indent=1)
+        print(f"updated {args.out}")
+        sys.exit(0)
+
+    if args.sweep_box:
+        import sys
+        with open(args.out) as f:
+            result = json.load(f)
+        # 通る場合の「余裕◯cm」は、RRTが見つけた生の経路から取ると
+        # ほぼ常に0になる(経路は壁や床ギリギリを掠めて通るため。床に
+        # 接して滑る分だけでも0)。ユーザーに見せる余裕は「その場所で
+        # 一番良い姿勢を取ったときの余裕」なので、運搬者ありの
+        # ボトルネックと同じ掃引を家具単体でも行う。
+        print("\nボトルネック掃引(家具単体、中心線に沿って)...")
+        t0 = time.time()
+        sweep = sweep_capacity(outer, obstacles, with_human=False)
+        s_min, c_min, pose_min = min(sweep, key=lambda r: r[1])
+        print(f"  最も狭い位置: 弧長 s={s_min:.0f}cm, 最良姿勢での余裕={c_min:.1f}cm "
+              f"[{time.time() - t0:.0f}s]")
+        result["bottleneck_furniture_only"] = {
+            "s": float(s_min), "capacity_cm": float(c_min),
+            "xy": list(map(float, skeleton_xy(s_min))),
+            "pose": pose_min,
+            "profile": [[float(s), float(c)] for s, c, _ in sweep],
         }
         with open(args.out, "w") as f:
             json.dump(result, f, indent=1)
