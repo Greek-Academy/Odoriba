@@ -38,6 +38,7 @@ python phase2_lstair.py                    # RRT 2ケース + ボトルネック
 python phase2_lstair.py --find-max-width    # 家具単体で通る最大幅を二分探索してJSONに追記
 python phase2_lstair.py --find-max-length   # 運搬者ありで通る最大長さを二分探索してJSONに追記
 python mesh_env.py                          # メッシュ受け口と直方体方式の判定一致チェック(LiDAR受け入れ準備)
+python catalog.py                           # 定番家具7種の一斉判定表(15〜30分。--table-onlyで保存済み結果の表示のみ)
 ```
 
 保存済みJSONからの**図の再生成(数秒、探索は走らない)**:
