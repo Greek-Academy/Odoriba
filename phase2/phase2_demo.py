@@ -337,18 +337,26 @@ class _Node:
 
 
 def _nearest(tree, pos, quat, w_rot=None):
-    """treeの全ノードを線形走査して最近傍を探す。
+    """treeの全ノードから最近傍を探す(numpyで一括計算)。
 
-    既知の性能上の限界: これは木のサイズに対して線形で、extend/connect
-    のたびに呼ばれるため、反復回数が数千を超えるとRRT全体がO(n^2)で
-    重くなる(運搬者ありのオラクルはさらに1回あたりのコストも高い)。
-    KD-treeなどでの高速化はCLAUDE.mdの通り「性能が足りなくなってから」
-    でよいが、探索が数分単位で終わらない場合はまずここを疑う。
+    以前はノードごとにg3.dist_se3を呼ぶPythonループで、scipyの
+    Rotationオブジェクト生成が1ノードごとに走るぶん遅かった。式は
+    同じ「位置差のノルム + w * 回転角」で、回転角は単位クォータニオン
+    の内積dから 2*atan2(sqrt(1-d^2), |d|) として一括計算する
+    (dist_se3が使う相対回転のmagnitudeと数学的に同値)。
+
+    木のサイズに対して線形なのは変わらない(O(n^2)の係数を大きく
+    下げただけ)。反復数万の規模で足りなくなったらKD-tree等を検討する
+    -- CLAUDE.mdの「性能が足りなくなってから」。
     """
     w = W_ROT if w_rot is None else w_rot
-    dists = [g3.dist_se3(n.pos, n.quat, pos, quat, w=w) for n in tree]
+    P = np.array([n.pos for n in tree])
+    Q = np.array([n.quat for n in tree])
+    dp = np.linalg.norm(P - np.asarray(pos), axis=1)
+    d = np.clip(np.abs(Q @ np.asarray(quat)), 0.0, 1.0)
+    dists = dp + w * (2.0 * np.arctan2(np.sqrt(1.0 - d * d), d))
     i = int(np.argmin(dists))
-    return i, dists[i]
+    return i, float(dists[i])
 
 
 def _steer(pos_from, quat_from, pos_to, quat_to, w_rot=None):
