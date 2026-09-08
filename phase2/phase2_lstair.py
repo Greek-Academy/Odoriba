@@ -491,6 +491,61 @@ def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
     return lo, trials
 
 
+def find_max_furniture_length(outer, obstacles, num_carriers=None, tol=2.0,
+                              max_iter=4000, seeds=(0, 1), probe_los=(130.0, 100.0, 80.0)):
+    """運搬者ありで通る最大の家具長さ(cm)を二分探索する。
+
+    find_max_furniture_widthの長さ版。あちらは「家具単体」の上限幅
+    だが、PRDの本命は「人が運ぶ前提での上限サイズ」なので、
+    こちらは運搬者ありのオラクルで探索する。詰まりの主因は長さ
+    (運搬者2人で実効長が約+100cmになる)なので、振る次元も長さにする。
+
+    二分探索には「通る」下限が要るが、運搬者ありではどの長さが通るか
+    事前に分からないため、probe_losを上から順に試して最初に通った
+    長さをloにする。どれも通らなければ(None, trials)を返す
+    (=この階段は人が運ぶ前提だと probe_los の最小値でも通らない)。
+    hiは呼び出し時点のFURN_L(メイン実行でBLOCKED確認済みの長さ)。
+    """
+    global FURN_L
+    orig = FURN_L
+    hi = FURN_L
+    trials = []
+
+    def passes(length):
+        global FURN_L
+        FURN_L = length
+        for sd in seeds:
+            path = p.rrt_connect(
+                START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
+                num_carriers=num_carriers, max_iter=max_iter, seed=sd,
+                sampler=make_sampler(with_human=True), validator=state_valid)
+            if path is not None:
+                return True
+        return False
+
+    try:
+        lo = None
+        for cand in probe_los:
+            ok = passes(cand)
+            trials.append((cand, ok))
+            if ok:
+                lo = cand
+                break
+        if lo is None:
+            return None, trials
+        while hi - lo > tol:
+            m = round((lo + hi) / 2.0, 1)
+            ok = passes(m)
+            trials.append((m, ok))
+            if ok:
+                lo = m
+            else:
+                hi = m
+    finally:
+        FURN_L = orig
+    return lo, trials
+
+
 # ---- START / GOAL ----
 _YAW90 = _pose(90.0, 0.0).as_quat()   # 長軸を+y(下廊下の進行方向)へ
 _YAW0 = _pose(0.0, 0.0).as_quat()     # 長軸を+x(上廊下の進行方向)へ
@@ -557,6 +612,9 @@ if __name__ == "__main__":
     parser.add_argument("--find-max-width", action="store_true",
                         help="家具単体で通る最大の家具幅を二分探索し、"
                              "既存の結果JSONに追記して終了する")
+    parser.add_argument("--find-max-length", action="store_true",
+                        help="運搬者ありで通る最大の家具長さを二分探索し、"
+                             "既存の結果JSONに追記して終了する")
     parser.add_argument("--out", default=os.path.join("results", "lstair_result.json"))
     args = parser.parse_args()
     num_carriers = args.carriers
@@ -580,6 +638,34 @@ if __name__ == "__main__":
         result["max_width_furniture_only"] = {
             "max_w": float(max_w),
             "trials": [[float(w), bool(ok)] for w, ok in trials],
+            "note": "RRT2seedsで見つかればPASS。確率的探索なので下振れし得る",
+        }
+        with open(args.out, "w") as f:
+            json.dump(result, f, indent=1)
+        print(f"updated {args.out}")
+        sys.exit(0)
+
+    if args.find_max_length:
+        import sys
+        with open(args.out) as f:
+            result = json.load(f)
+        print(f"\n運搬者{num_carriers}人で通る最大長さを二分探索中"
+              "(1回のRRTに数十秒〜数分かかる)...")
+        t0 = time.time()
+        max_l, trials = find_max_furniture_length(
+            outer, obstacles, num_carriers=num_carriers, max_iter=args.max_iter)
+        for l, ok in trials:
+            print(f"  長さ{l:5.1f}cm: {'PASS' if ok else 'BLOCKED'}")
+        if max_l is None:
+            print(f"  -> どの試行長さでも通らなかった [{time.time() - t0:.0f}s]")
+        else:
+            print(f"  -> この階段なら(幅{FURN_W:.0f}・高さ{FURN_H:.0f}の家具を"
+                  f"{num_carriers}人で運ぶ前提で)長さ{max_l:.0f}cmまで入る "
+                  f"[{time.time() - t0:.0f}s]")
+        result["max_length_with_carriers"] = {
+            "max_l": None if max_l is None else float(max_l),
+            "num_carriers": num_carriers,
+            "trials": [[float(l), bool(ok)] for l, ok in trials],
             "note": "RRT2seedsで見つかればPASS。確率的探索なので下振れし得る",
         }
         with open(args.out, "w") as f:
