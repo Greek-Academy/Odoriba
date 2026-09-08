@@ -625,6 +625,44 @@ def path_min_clearance_lstair(path, with_human, outer, obstacles, num_carriers=N
     return vals[i], i
 
 
+def _where_on_skeleton(s):
+    """弧長sの場所の英語ラベル(図の注記用)。踊り場ならlanding。"""
+    s_land0 = FL1_Y1
+    s_land1 = S_CORNER + (FL2_X0 - CENTER)
+    return "landing" if s_land0 <= s <= s_land1 else f"s={s:.0f}cm"
+
+
+def result_summary_lines(result):
+    """結果JSON(dict)から、図に載せる結論の1行サマリー(英語)を組み立てる。
+
+    PNG/GIF/3Dビューアが同じ数字を出すよう、出典をこのJSON一本に固定する
+    ための共通関数。まだ計算していない項目(キーが無い)は黙って省く。
+    図中の文字が英語なのはmatplotlib既定フォントの豆腐対策
+    (phase2_lstair_viz.pyのdocstring参照)。
+    """
+    lines = []
+    bn_box = result.get("bottleneck_furniture_only")
+    if bn_box:
+        lines.append(f"furniture alone: tightest at {_where_on_skeleton(bn_box['s'])}, "
+                     f"{bn_box['capacity_cm']:.1f}cm margin at best pose")
+    bn = result.get("bottleneck")
+    if bn and bn["capacity_cm"] < 0:
+        nc = result["meta"]["carrier"]["num_carriers"]
+        tilt = result["meta"]["carrier"]["max_tilt_deg"]
+        lines.append(f"with {nc} carriers: {-bn['capacity_cm']:.1f}cm short at "
+                     f"{_where_on_skeleton(bn['s'])} (best pose within {tilt:.0f} deg tilt)")
+    caps = []
+    mw = result.get("max_width_furniture_only")
+    if mw:
+        caps.append(f"alone up to W={mw['max_w']:.0f}cm")
+    ml = result.get("max_length_with_carriers")
+    if ml and ml.get("max_l") is not None:
+        caps.append(f"carried by {ml['num_carriers']} up to L={ml['max_l']:.0f}cm")
+    if caps:
+        lines.append("max furniture size for this staircase: " + " / ".join(caps))
+    return lines
+
+
 def _path_to_json(path):
     return [[*map(float, pos), *map(float, quat)] for pos, quat in path]
 
