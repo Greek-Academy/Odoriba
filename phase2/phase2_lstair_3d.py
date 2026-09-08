@@ -119,7 +119,7 @@ def carrier_states(pos, quat, outer, obstacles, num_carriers):
     return out
 
 
-def render_html(result, out_path):
+def render_html(result, out_path, use_cdn=False):
     outer, obstacles = L.build_lstairs()
     meta = result["meta"]
     num_carriers = meta["carrier"]["num_carriers"]
@@ -192,7 +192,11 @@ def render_html(result, out_path):
             "Odoriba Phase 2: L-shaped staircase 3D viewer "
             f"(stair width {meta['stair']['width']:.0f}cm, "
             f"furniture {meta['furniture']['L']:.0f}x{meta['furniture']['W']:.0f}"
-            f"x{meta['furniture']['H']:.0f}cm) -- drag to rotate"),
+            f"x{meta['furniture']['H']:.0f}cm) -- drag to rotate"
+            # 結論の数字(PNG/GIFと同じ出典=結果JSON)をタイトル2行目に。
+            # 位置指定のannotationはスライダーと重なりやすいのでtitleに載せる
+            + ("<br><sup>" + "  |  ".join(L.result_summary_lines(result)) + "</sup>"
+               if L.result_summary_lines(result) else "")),
             x=0.5),
         margin=dict(l=0, r=0, t=70, b=0),
     )
@@ -200,15 +204,22 @@ def render_html(result, out_path):
                       camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
     fig.update_layout(scene=same_scene, scene2=same_scene)
 
-    fig.write_html(out_path, include_plotlyjs="cdn", auto_play=False)
-    print(f"saved 3D viewer to {out_path}")
+    # 既定はplotly.jsをHTMLに埋め込む(約4MB増えるが、合宿など
+    # ネットの無い場所でもファイル1つで開ける)。--cdnで軽量版。
+    fig.write_html(out_path, include_plotlyjs=("cdn" if use_cdn else True),
+                   auto_play=False)
+    print(f"saved 3D viewer to {out_path}"
+          f" ({'CDN' if use_cdn else 'offline, plotly.js embedded'})")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", default=os.path.join("results", "lstair_result.json"))
     parser.add_argument("--out", default="phase2_lstair_3d.html")
+    parser.add_argument("--cdn", action="store_true",
+                        help="plotly.jsを埋め込まずCDNから読む(ファイルが小さくなるが"
+                             "ネット接続が必要)")
     args = parser.parse_args()
     with open(args.json) as f:
         result = json.load(f)
-    render_html(result, args.out)
+    render_html(result, args.out, use_cdn=args.cdn)
