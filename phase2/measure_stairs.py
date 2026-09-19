@@ -87,14 +87,32 @@ def measure(path, assume_units=None):
             widths.append(w)
     width = float(np.median(widths)) if widths else 90.0
 
+    # --- 天井(頭上クリアランス): 中心線の各柱で、歩行面と真上の構造の隙間 ---
+    line = sd.centerline(m)
+    gaps = []
+    for x, y, zc in line:
+        col = v[np.hypot(v[:, 0] - x, v[:, 1] - y) < 25]
+        if len(col) < 20:
+            continue
+        below = col[col[:, 2] <= zc + 10]
+        above = col[col[:, 2] > zc + 30]
+        if len(below) < 5 or len(above) < 5:
+            continue
+        gap = np.percentile(above[:, 2], 20) - np.percentile(below[:, 2], 20)
+        if 120 < gap < 260:
+            gaps.append(gap)
+    headroom = float(np.median(gaps)) if gaps else 220.0
+
     return {
         "rise": round(rise, 1), "tread": round(tread, 1), "width": round(width, 1),
         "n_steps_total": n_steps_total, "total_height": round(total_height, 1),
+        "headroom": round(headroom, 1),
         "confidence": {
             "rise": "安定(高さピーク間隔)",
             "n_steps/total_height": "安定",
             "tread": "改善(段レベルの水平移動の中央値)",
             "width": "改善(踏み面のみ・壁を除外)",
+            "headroom": "粗い(頭上の構造の有無に依存)",
         },
     }
 
@@ -111,6 +129,7 @@ if __name__ == "__main__":
     print(f"  蹴上げ rise      = {r['rise']} cm   [{r['confidence']['rise']}]")
     print(f"  踏み面 tread     = {r['tread']} cm   [{r['confidence']['tread']}]")
     print(f"  幅 width         = {r['width']} cm   [{r['confidence']['width']}]")
+    print(f"  頭上 headroom    = {r['headroom']} cm   [{r['confidence']['headroom']}]")
     print(f"  総高 total       = {r['total_height']} cm")
     print(f"  段数(全体)       = {r['n_steps_total']} (2フライトなら各 {r['n_steps_total']//2})")
     print("注意: 踏み面・幅は水平面(踏み面)のみから計測して改善済みだが、"

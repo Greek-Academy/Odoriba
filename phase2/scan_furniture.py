@@ -162,18 +162,22 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1), num_carriers=0):
         found = False
         min_clear = None
         found_path = None
+        best_effort = None
         for sd in seeds:
-            path = p.rrt_connect(
+            path, tree = p.rrt_connect(
                 start, goal, with_human=with_human, outer=outer, obstacles=obstacles,
                 num_carriers=num_carriers or None, max_iter=max_iter, seed=sd, w_rot=L.W_ROT,
-                sampler=L.make_sampler(with_human=with_human), validator=validator)
+                sampler=L.make_sampler(with_human=with_human), validator=validator,
+                return_trees=True)
             if path is not None:
                 found = True
                 found_path = path
                 min_clear = min(furn_clear(ps, q) for ps, q in path)
                 break
+            best_effort = L.best_effort_path(tree)  # 見つからない時: 最遠まで到達した経路
         return {"found": found, "min_clearance": min_clear, "dims": dims,
-                "path": found_path, "num_carriers": num_carriers}
+                "path": found_path, "best_effort": best_effort,
+                "num_carriers": num_carriers}
     finally:
         L.FURN_L, L.FURN_W, L.FURN_H = orig
 
@@ -219,12 +223,13 @@ def render_gif(furn, path, out_path, fps=12, step_cm=10.0):
     print(f"saved gif to {out_path} ({len(dense)} frames)")
 
 
-def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
-    """スキャン家具がL字階段を通り抜ける様子を、ブラウザで回せる3D(HTML)にする。
+def render_3d(furn, path, out_path, n_frames=60, num_carriers=0, stuck=False):
+    """家具がL字階段を通り抜ける様子を、ブラウザで回せる3D(HTML)にする。
 
-    phase2_lstair_3dの部品(階段の直方体・ワイヤーフレーム・再生UI)を
-    再利用し、家具はスキャンの実点群を経路に沿って動かす。num_carriers>0なら
-    運搬者(円柱)も各フレームで描く。plotly.jsを埋め込みオフラインで開ける。
+    階段の各段(直方体)と、外枠の天井(半透明の面)を描く。天井も衝突判定に
+    入っていることを見た目で示す。家具は実点群を経路に沿って動かし、
+    num_carriers>0なら運搬者(円柱)も描く。stuck=Trueなら詰まった経路として
+    家具を赤で表示する。plotly.jsを埋め込みオフラインで開ける。
     """
     import plotly.graph_objects as go
     import phase2_lstair_3d as v3
@@ -233,6 +238,9 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
     outer, obstacles = L.build_lstairs()
     local = np.asarray(furn["local"], dtype=float)
     czcol = local[:, 2]  # 高さで色付け(立体感)
+    furn_marker = (dict(size=3.0, color="#d0392b")     # 詰まり: 赤
+                   if stuck else
+                   dict(size=2.6, color=czcol, colorscale="YlOrRd", showscale=False))
     # 運搬者の把持点は家具の長辺端に置くので、FURN_Lをスキャン寸法に合わせる
     orig = (L.FURN_L, L.FURN_W, L.FURN_H)
     L.FURN_L, L.FURN_W, L.FURN_H = map(float, furn["dims"])
@@ -245,8 +253,7 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
         wp = (local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
         traces = [go.Scatter3d(
             x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
-            marker=dict(size=2.6, color=czcol, colorscale="YlOrRd", showscale=False),
-            showlegend=False, hoverinfo="skip")]
+            marker=furn_marker, showlegend=False, hoverinfo="skip")]
         if num_carriers > 0:
             for c in L.best_human_positions_lstair(pos, quat, num_carriers,
                                                    outer, obstacles):
@@ -258,7 +265,16 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
         fig = go.Figure()
         for c, r, h in obstacles:  # 階段(半透明の淡色にして家具を見やすく)
             fig.add_trace(v3.box_mesh(c, r, h, "#c3ccd6", opacity=0.5))
-        fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
+        fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭(壁)
+        for c, r, h in outer:      # 天井(外枠の上面)を半透明の面で描く=天井も考慮
+            top_c = np.array([c[0], c[1], c[2] + h[2] - 1.0])
+            top_h = np.array([h[0], h[1], 1.0])
+            vtx = p.g3.obb_corners(top_c, r, top_h)
+            tri = v3._BOX_TRI
+            fig.add_trace(go.Mesh3d(x=vtx[:, 0], y=vtx[:, 1], z=vtx[:, 2],
+                                    i=tri[:, 0], j=tri[:, 1], k=tri[:, 2],
+                                    color="#8090a5", opacity=0.15, flatshading=True,
+                                    showscale=False, hoverinfo="skip"))
         init = frame_traces(dense[0])
         for t in init:
             fig.add_trace(t)
@@ -283,8 +299,11 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
                                                          fromcurrent=True)])])],
         sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04,
                       currentvalue=dict(visible=False))],
-        title=dict(text=f"Scanned cardboard ({d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm) "
-                        "through the L-staircase -- drag to rotate", x=0.5),
+        title=dict(text=f"furniture {d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm"
+                        + (f" + {num_carriers} carriers" if num_carriers else " (alone)")
+                        + (" -- BLOCKED (stops where it jams)" if stuck
+                           else " -- PASS")
+                        + " / drag to rotate", x=0.5),
         scene=dict(aspectmode="data", camera=dict(eye=dict(x=-1.4, y=-1.5, z=0.9))),
         margin=dict(l=0, r=0, t=50, b=0))
     fig.write_html(out_path, include_plotlyjs=True, auto_play=False)
