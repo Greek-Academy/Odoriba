@@ -208,6 +208,12 @@ def configure(width=None, rise=None, tread=None, n_steps1=None, n_steps2=None,
     CORNER_S1 = S_CORNER + (STAIR_WIDTH - CENTER) + 40.0
     STAIR_ANGLE_DEG = np.degrees(np.arctan2(RISE, TREAD))
 
+    # START/GOALも寸法依存なので作り直す(find_max_*が参照するため)
+    global START, GOAL
+    START = (np.array([CENTER, 170.0, FURN_H / 2]), _pose(90.0, 0.0).as_quat())
+    GOAL = (np.array([FL2_X1 + 170.0, LAND_YC, TOP_Z + FURN_H / 2]),
+            _pose(0.0, 0.0).as_quat())
+
 
 def skeleton_xy(s):
     """弧長s(0..S_TOTAL)における中心線上の点(x, y)。"""
