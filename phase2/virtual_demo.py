@@ -1,0 +1,80 @@
+"""
+数値から仮想階段を組んで、家具を通すデモ(スキャンの見た目に頼らない版)。
+
+階段の寸法(幅・蹴上げ・踏み面・段数・踊り場)を数値で指定して仮想の
+L字階段を作り、家具(寸法を数値で指定、またはスキャンから)を通せるか
+判定して、きれいな3D(HTML)とGIFを出す。
+
+例:
+  # 数値だけで: 幅80cm・蹴上げ18・踏み面25・各10段の階段に、幅60x高さ40x長さ180の家具を2人で
+  python virtual_demo.py --width 80 --rise 18 --tread 25 --steps 10 \\
+      --furniture 180 60 40 --carriers 2 --html out.html
+
+  # 家具はスキャンから、階段は数値で
+  python virtual_demo.py --width 78 --rise 18 --tread 25 --steps 13 \\
+      --furniture-scan box.obj --html out.html
+"""
+
+import argparse
+
+import numpy as np
+
+import geometry3d as g3
+import phase2_lstair as L
+import scan_furniture as sf
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--width", type=float, help="階段・踊り場の幅(cm)")
+    ap.add_argument("--rise", type=float, help="蹴上げ=1段の高さ(cm)")
+    ap.add_argument("--tread", type=float, help="踏み面=1段の奥行き(cm)")
+    ap.add_argument("--steps", type=int, help="1フライトの段数(上下とも同数にする)")
+    ap.add_argument("--n1", type=int, help="下フライトの段数(--stepsの代わりに個別指定)")
+    ap.add_argument("--n2", type=int, help="上フライトの段数")
+    ap.add_argument("--ceil", type=float, help="天井高(最上段からの高さ, cm)")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
+                   help="家具の寸法(長さ 幅 高さ, cm)")
+    g.add_argument("--furniture-scan", help="家具のスキャンOBJ/PLY(寸法を読み取る)")
+    ap.add_argument("--carriers", type=int, choices=(0, 1, 2), default=0)
+    ap.add_argument("--max-iter", type=int, default=4000)
+    ap.add_argument("--html", help="3Dビューア(HTML)の出力先")
+    ap.add_argument("--gif", help="アニメGIFの出力先")
+    args = ap.parse_args()
+
+    # --- 数値から仮想階段を組む ---
+    n1 = args.n1 if args.n1 is not None else args.steps
+    n2 = args.n2 if args.n2 is not None else args.steps
+    L.configure(width=args.width, rise=args.rise, tread=args.tread,
+                n_steps1=n1, n_steps2=n2, ceil_clear=args.ceil)
+    print(f"仮想階段: 幅{L.STAIR_WIDTH:.0f}cm / 蹴上げ{L.RISE:.0f} x 踏み面{L.TREAD:.0f}cm / "
+          f"({L.N_STEPS1}+{L.N_STEPS2})段 / 踊り場{L.STAIR_WIDTH:.0f}角 / "
+          f"全高{L.TOP_Z:.0f}cm")
+
+    # --- 家具(寸法 or スキャン) ---
+    if args.furniture:
+        dims = np.array(sorted(args.furniture, reverse=True), dtype=float)
+        # 直方体の表面サンプル点を家具ローカル点として用意(長辺=x)
+        local = g3.box_surface_sample_points(dims / 2, nu=8, nv=4, nw=4)
+        furn = {"local": local, "dims": dims}
+    else:
+        pts = sf.isolate_object_points(args.furniture_scan)
+        furn = sf.load_furniture(points=pts)
+    print(f"家具: {furn['dims'].round(0)} cm (長辺x中間x短辺)")
+
+    # --- 判定 ---
+    res = sf.judge_in_lstair(furn, max_iter=args.max_iter, num_carriers=args.carriers)
+    who = "家具単体" if args.carriers == 0 else f"運搬者{args.carriers}人"
+    verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
+    print(f"{who}: {verdict}")
+
+    # --- 可視化 ---
+    if res["found"] and (args.html or args.gif):
+        if args.gif:
+            sf.render_gif(furn, res["path"], args.gif)
+        if args.html:
+            sf.render_3d(furn, res["path"], args.html, num_carriers=args.carriers)
+    elif (args.html or args.gif):
+        print("経路が見つからなかったので可視化は出せません(--max-iterを増やして再試行)")
