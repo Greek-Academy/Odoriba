@@ -28,37 +28,80 @@ import trimesh
 import phase2_demo as p
 import phase2_lstair as L
 import scan_ingest as si
+import scan_demo as sd
 
 
-def load_furniture(path=None, mesh=None, assume_units=None, n_points=250):
-    """家具スキャンを読み、OBBで姿勢を正規化して表面点(ローカル)を返す。
+def isolate_object_points(path, assume_units=None, min_range=20.0, xy_bin=5.0):
+    """床や周囲を一緒に撮ってしまったスキャンから、対象物(段ボール等)の
+    点だけを切り出す。
 
-    戻り値: dict(local=表面点(N,3,中心原点・長辺がx), dims=(L,W,H降順), mesh=正規化後)
-    pathの代わりにmeshを直接渡してもよい(自己テスト用)。
+    考え方: 床は薄い板なので、そのXYセルの高さの幅(zの最大-最小)は小さい。
+    箱は壁で床から天面まで厚みがあるので、そのセルの高さの幅は大きい。
+    そこで「高さの幅が min_range cm 以上のセル」を対象物の footprint とし、
+    その最大連結塊(+余白)の点を切り出す。上下の向きに依存しないので、
+    軸の反転や床の広さに強い。
+    戻り値: 対象物の点群(N,3, cm)
     """
-    if mesh is None:
-        mesh = si.load_mesh(path)
-        scale, _ = si.guess_units_scale(mesh, assume_units)
-        mesh.apply_scale(scale)
+    from scipy import ndimage
+    mesh, _ = sd.load_scan_zup(path, assume_units)
+    v = np.asarray(mesh.vertices)
+    bx = np.arange(v[:, 0].min(), v[:, 0].max() + xy_bin, xy_bin)
+    by = np.arange(v[:, 1].min(), v[:, 1].max() + xy_bin, xy_bin)
+    ix = np.clip(np.digitize(v[:, 0], bx) - 1, 0, len(bx) - 2)
+    iy = np.clip(np.digitize(v[:, 1], by) - 1, 0, len(by) - 2)
+    nx, ny = len(bx) - 1, len(by) - 1
+    zmax = np.full((nx, ny), -1e9)
+    zmin = np.full((nx, ny), 1e9)
+    np.maximum.at(zmax, (ix, iy), v[:, 2])
+    np.minimum.at(zmin, (ix, iy), v[:, 2])
+    zrange = np.where(zmax > -1e8, zmax - zmin, 0.0)
 
-    # 有向境界箱(OBB)で、物体の主軸をワールド軸に揃える
-    obb = mesh.bounding_box_oriented
-    Tinv = np.linalg.inv(obb.primitive.transform)
-    mesh = mesh.copy()
-    mesh.apply_transform(Tinv)  # OBB中心が原点、OBB軸が座標軸
+    mask = zrange > min_range
+    lbl, n = ndimage.label(mask)
+    if n == 0:
+        return v  # 厚みのある塊が無い=切り出せない。そのまま返す
+    sizes = np.bincount(lbl.ravel())
+    sizes[0] = 0
+    xi, yi = np.where(lbl == sizes.argmax())
+    x0, x1 = bx[xi.min()], bx[xi.max() + 1]
+    y0, y1 = by[yi.min()], by[yi.max() + 1]
 
-    ext = np.asarray(mesh.extents, dtype=float)
+    m = 3.0
+    sel = ((v[:, 0] >= x0 - m) & (v[:, 0] <= x1 + m) &
+           (v[:, 1] >= y0 - m) & (v[:, 1] <= y1 + m))
+    return v[sel]
+
+
+def load_furniture(path=None, mesh=None, points=None, assume_units=None, n_points=250):
+    """家具スキャンを読み、OBB(有向境界箱)で姿勢を正規化して表面点
+    (ローカル・中心原点・長辺がx)を返す。
+
+    入力はpath / mesh / points のいずれか。pointsは切り出し済みの点群。
+    戻り値: dict(local=表面点(N,3), dims=(L,W,H降順))
+    """
+    if points is None:
+        if mesh is None:
+            mesh = si.load_mesh(path)
+            scale, _ = si.guess_units_scale(mesh, assume_units)
+            mesh.apply_scale(scale)
+        try:
+            pts = np.asarray(mesh.sample(n_points * 4))
+        except Exception:
+            pts = np.asarray(mesh.vertices)
+    else:
+        pts = np.asarray(points)
+
+    # 点群の有向境界箱で、主軸を座標軸に揃えて中心を原点へ
+    T, ext = trimesh.bounds.oriented_bounds(pts)
+    local = trimesh.transform_points(pts, T)
     order = np.argsort(ext)[::-1]  # 長い順 -> x=長辺, y=中間, z=短辺
-    dims = ext[order]
+    local = local[:, order]
+    dims = np.asarray(ext)[order]
 
-    # 表面点をサンプル(なるべく一様に)。少数の頂点だけだと面の中央を
-    # 拾い損ねるので、mesh.sampleで面上から取る。
-    try:
-        pts = mesh.sample(n_points)
-    except Exception:
-        pts = np.asarray(mesh.vertices)[:n_points]
-    local = np.asarray(pts)[:, order]  # 軸を長い順に並べ替え
-    return {"local": local, "dims": dims, "mesh": mesh}
+    if len(local) > n_points:
+        idx = np.random.default_rng(0).choice(len(local), n_points, replace=False)
+        local = local[idx]
+    return {"local": local, "dims": dims}
 
 
 def furniture_world_points(local, pos, quat):
@@ -117,8 +160,9 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1)):
 def _selftest():
     """合成の箱(段ボール想定)で、寸法の取り出しと通過判定が動くか。"""
     print("=== 自己テスト: 合成の箱を家具スキャンに見立てる ===")
+    # 大箱は断面80x80(対角113cm>階段幅90cm)で、立てても回せず通らない寸法
     for name, ext in [("小さい箱 40x30x30", [40, 30, 30]),
-                      ("大きい箱 250x60x60", [250, 60, 60])]:
+                      ("大きい箱 250x80x80", [250, 80, 80])]:
         box = trimesh.creation.box(extents=ext)
         furn = load_furniture(mesh=box)
         print(f"{name}: 取り出したdims(cm)= {furn['dims'].round(0)}")
@@ -133,13 +177,20 @@ if __name__ == "__main__":
     parser.add_argument("furniture", nargs="?", help="家具の OBJ/PLY")
     parser.add_argument("--assume-units", choices=("m", "cm", "mm"))
     parser.add_argument("--max-iter", type=int, default=3000)
+    parser.add_argument("--raw", action="store_true",
+                        help="床除去(切り出し)をせず、スキャン全体を家具として使う")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
     if args.selftest:
         _selftest()
     elif args.furniture:
-        furn = load_furniture(args.furniture, assume_units=args.assume_units)
+        if args.raw:
+            furn = load_furniture(args.furniture, assume_units=args.assume_units)
+        else:
+            pts = isolate_object_points(args.furniture, assume_units=args.assume_units)
+            print(f"床・周囲を除去して対象物を切り出し: {len(pts)}点")
+            furn = load_furniture(points=pts)
         print(f"家具スキャン: dims(cm)= {furn['dims'].round(0)} (長辺x中間x短辺)")
         res = judge_in_lstair(furn, max_iter=args.max_iter)
         verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
