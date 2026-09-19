@@ -26,7 +26,8 @@
 - [x] 定番家具カタログの一斉判定(catalog.py、7種の一覧表) (2026-09-08, feature/furniture-catalog)
 - [x] スキャン取り込み前処理(scan_ingest.py: 単位推定・穴埋め・ボクセル水密化、MeshEnvの非水密フォールバック) (2026-09-19, feature/scan-ingest)
 - [x] 実スキャン階段の一次デモ(scan_demo.py: cm正規化・Z-up軸合わせ・配置と運搬シーケンス可視化) (2026-09-19, feature/scan-demo)
-- [x] スキャンの水密化ロジック(to_free_space_voxel: 囲まれた空気の抽出、閉じ判定。閉じた箱で検証済み) (2026-09-19, feature/scan-watertight)
+- [x] スキャンの水密化ロジック(to_free_space_voxel: 囲まれた空気の抽出、閉じ判定。閉じた箱で検証済み。実スキャン階段は壁が閉じず適用不可と判明) (2026-09-19, feature/scan-watertight)
+- [x] スキャン家具を運ぶ剛体として判定(scan_furniture.py: OBB正規化・点群でL字階段の通過判定。合成箱で小=PASS/大=BLOCKED確認) (2026-09-19, feature/scan-furniture)
 
 - [x] L字階段（踊り場）の環境・保持拘束付きオラクル・可視化 (2026-09-01, feature/l-shaped-staircase)
 - [x] 運搬者ありの上限長さ二分探索 --find-max-length（2人なら162cmまで） (2026-09-08, feature/max-length-search)
