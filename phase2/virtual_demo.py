@@ -64,8 +64,12 @@ if __name__ == "__main__":
         half = max(1, r["n_steps_total"] // 2)
         if n1 is None: n1 = half
         if n2 is None: n2 = half
+    ceil = args.ceil
+    if ceil is None and args.measure_stair:
+        ceil = r["headroom"]                        # 天井も計測値を使う
+        print("スキャン計測: 頭上クリアランス %.0fcm" % ceil)
     L.configure(width=width, rise=rise, tread=tread,
-                n_steps1=n1, n_steps2=n2, ceil_clear=args.ceil)
+                n_steps1=n1, n_steps2=n2, ceil_clear=ceil)
     print(f"仮想階段: 幅{L.STAIR_WIDTH:.0f}cm / 蹴上げ{L.RISE:.0f} x 踏み面{L.TREAD:.0f}cm / "
           f"({L.N_STEPS1}+{L.N_STEPS2})段 / 踊り場{L.STAIR_WIDTH:.0f}角 / "
           f"全高{L.TOP_Z:.0f}cm")
@@ -87,11 +91,14 @@ if __name__ == "__main__":
     verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
     print(f"{who}: {verdict}")
 
-    # --- 可視化 ---
-    if res["found"] and (args.html or args.gif):
-        if args.gif:
-            sf.render_gif(furn, res["path"], args.gif)
-        if args.html:
-            sf.render_3d(furn, res["path"], args.html, num_carriers=args.carriers)
-    elif (args.html or args.gif):
-        print("経路が見つからなかったので可視化は出せません(--max-iterを増やして再試行)")
+    # --- 可視化(通れば経路、詰まればbest-effort=最遠到達を赤で) ---
+    if args.html or args.gif:
+        vpath = res["path"] if res["found"] else res.get("best_effort")
+        if vpath is None:
+            print("可視化用の経路が得られませんでした")
+        else:
+            if args.gif:
+                sf.render_gif(furn, vpath, args.gif)
+            if args.html:
+                sf.render_3d(furn, vpath, args.html, num_carriers=args.carriers,
+                             stuck=not res["found"])
