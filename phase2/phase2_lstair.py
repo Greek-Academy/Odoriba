@@ -171,6 +171,44 @@ CORNER_S0 = FL1_Y1 - 40.0
 CORNER_S1 = S_CORNER + (STAIR_WIDTH - CENTER) + 40.0
 
 
+def configure(width=None, rise=None, tread=None, n_steps1=None, n_steps2=None,
+              base_d=None, top_d=None, ceil_clear=None):
+    """L字階段の寸法を数値で設定し、派生量(座標・中心線など)を作り直す。
+
+    「実測や好みの数値から仮想階段を組む」ための入口。指定しない引数は
+    現在値を維持する。build_lstairs/make_sampler/オラクル等はここで
+    再計算したモジュール変数を参照するので、この呼び出し後の判定・可視化は
+    新しい寸法で動く。
+    """
+    global STAIR_WIDTH, RISE, TREAD, N_STEPS1, N_STEPS2, BASE_D, TOP_D, CEIL_CLEAR
+    global FL1_Y0, FL1_Y1, LAND_Y1, LAND_Z, FL2_X0, FL2_X1, TOP_X1, TOP_Z
+    global CENTER, LAND_YC, S_CORNER, S_TOTAL, CORNER_S0, CORNER_S1, STAIR_ANGLE_DEG
+    if width is not None: STAIR_WIDTH = float(width)
+    if rise is not None: RISE = float(rise)
+    if tread is not None: TREAD = float(tread)
+    if n_steps1 is not None: N_STEPS1 = int(n_steps1)
+    if n_steps2 is not None: N_STEPS2 = int(n_steps2)
+    if base_d is not None: BASE_D = float(base_d)
+    if top_d is not None: TOP_D = float(top_d)
+    if ceil_clear is not None: CEIL_CLEAR = float(ceil_clear)
+
+    FL1_Y0 = BASE_D
+    FL1_Y1 = BASE_D + N_STEPS1 * TREAD
+    LAND_Y1 = FL1_Y1 + STAIR_WIDTH
+    LAND_Z = N_STEPS1 * RISE
+    FL2_X0 = STAIR_WIDTH
+    FL2_X1 = FL2_X0 + N_STEPS2 * TREAD
+    TOP_X1 = FL2_X1 + TOP_D
+    TOP_Z = LAND_Z + N_STEPS2 * RISE
+    CENTER = STAIR_WIDTH / 2
+    LAND_YC = FL1_Y1 + STAIR_WIDTH / 2
+    S_CORNER = LAND_YC
+    S_TOTAL = S_CORNER + (TOP_X1 - CENTER)
+    CORNER_S0 = FL1_Y1 - 40.0
+    CORNER_S1 = S_CORNER + (STAIR_WIDTH - CENTER) + 40.0
+    STAIR_ANGLE_DEG = np.degrees(np.arctan2(RISE, TREAD))
+
+
 def skeleton_xy(s):
     """弧長s(0..S_TOTAL)における中心線上の点(x, y)。"""
     if s <= S_CORNER:
