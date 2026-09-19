@@ -51,7 +51,18 @@ const target = new BABYLON.Vector3(TARGET[0],TARGET[1],TARGET[2]);
 const cam = new BABYLON.ArcRotateCamera('cam', -1.4, 1.15, RADIUS*2.2, target, scene);
 cam.upVector = new BABYLON.Vector3(0,0,1);          // Z-up
 cam.wheelPrecision = 0.4; cam.minZ = 1; cam.attachControl(canvas, true);
-new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.3,0.4,1), scene).intensity = 1.05;
+new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.3,0.4,1), scene).intensity = 1.15;
+new BABYLON.HemisphericLight('h2', new BABYLON.Vector3(-0.3,-0.4,-1), scene).intensity = 0.5;
+
+// 「手前の壁だけ」を消して中を見せる = クリッピング平面。
+// カメラと中心の間にある手前側の面を切り取る。回転すると平面も追従して、
+// 常にこちら側の壁だけが消える(全体は不透明のまま)。CUTは切り込みの深さ。
+const CUT = RADIUS * {cut};
+scene.onBeforeRenderObservable.add(() => {{
+  const dir = target.subtract(cam.position); dir.normalize();   // 奥向き
+  const pt = target.subtract(dir.scale(CUT));                    // 中心より手前
+  scene.clipPlane = BABYLON.Plane.FromPositionAndNormal(pt, dir.scale(-1));
+}});
 
 // 家具(箱): 明るいオレンジのソリッド。長辺x/中間y/短辺z
 const box = BABYLON.MeshBuilder.CreateBox('box',
@@ -62,14 +73,12 @@ bm.diffuseColor  = new BABYLON.Color3(1.0,0.45,0.08);
 box.material = bm; box.rotationQuaternion = new BABYLON.Quaternion();
 
 BABYLON.SceneLoader.AppendAsync("", GLB, scene).then(() => {{
-  // 読み込んだ階段のマテリアルを半透明にして、手前の壁越しに中を見せる
+  // 階段は不透明のまま。両面を描いて、切り取った断面の内側も見えるように。
   scene.meshes.forEach(m => {{
     if (m === box) return;
     if (m.material) {{
-      m.material.alpha = ALPHA;
-      m.material.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
-      m.material.backFaceCulling = false;           // 内側の面も描く
-      m.material.separateCullingPass = true;
+      m.material.alpha = ALPHA;                       // 既定1.0(不透明)
+      m.material.backFaceCulling = false;            // 内側の面も描く
     }}
   }});
 }});
@@ -93,7 +102,7 @@ window.addEventListener('resize', () => engine.resize());
 """
 
 
-def build(stair_path, box_path, out_path, alpha=0.35, n=40):
+def build(stair_path, box_path, out_path, alpha=1.0, cut=0.15, n=40):
     stair_mesh, _ = sd.load_scan_zup(stair_path)
     glb = stair_mesh.export(file_type="glb")
     glb_b64 = base64.b64encode(glb).decode("ascii")
@@ -113,7 +122,7 @@ def build(stair_path, box_path, out_path, alpha=0.35, n=40):
         glb_b64=glb_b64, poses_json=poses_json,
         dims_json=json.dumps([float(x) for x in dims]),
         target_json=json.dumps([float(x) for x in c]),
-        radius=radius, alpha=alpha,
+        radius=radius, alpha=alpha, cut=cut,
         dimlabel=f"{dims[0]:.0f}x{dims[1]:.0f}x{dims[2]:.0f}cm")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -125,9 +134,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stair")
     parser.add_argument("box")
-    parser.add_argument("--alpha", type=float, default=0.35,
-                        help="階段の不透明度(小さいほど透ける)")
+    parser.add_argument("--alpha", type=float, default=1.0,
+                        help="階段の不透明度(既定1.0=不透明。手前は切り取りで見せる)")
+    parser.add_argument("--cut", type=float, default=0.15,
+                        help="手前の切り取り深さ(モデル半径に対する比。大きいほど深く切る)")
     parser.add_argument("--n", type=int, default=40)
     parser.add_argument("--out", default="scan_babylon.html")
     args = parser.parse_args()
-    build(args.stair, args.box, args.out, alpha=args.alpha, n=args.n)
+    build(args.stair, args.box, args.out, alpha=args.alpha, cut=args.cut, n=args.n)
