@@ -41,6 +41,8 @@ python mesh_env.py                          # メッシュ受け口と直方体�
 python scan_ingest.py --selftest            # スキャン取り込み前処理の自己テスト(実スキャン不要)
 python scan_ingest.py <scan.obj>            # 実スキャンOBJ/PLYを水密メッシュに整えて書き出す
 python scan_demo.py <scan.obj>              # 実スキャン階段に家具を置いてクリアランスを可視化
+python scan_furniture.py --selftest        # スキャン家具の通過判定の自己テスト
+python scan_furniture.py <furniture.obj>    # スキャンした家具がL字階段を通れるか判定
 python catalog.py                           # 定番家具7種の一斉判定表(15〜30分。--table-onlyで保存済み結果の表示のみ)
 ```
 
