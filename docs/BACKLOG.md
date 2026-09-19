@@ -12,6 +12,7 @@
 
 ## キュー
 
+- [ ] **実スキャンの取り込み仕上げ**: `scan_ingest.py` は前処理(単位・穴埋め・ボクセル水密化)まで実装済み。実データが来たら残りを詰める — 開口部(階段の出入口)への蓋付け、進行方向の軸合わせ、START/GOALをスキャン座標で定義、`scan_demo.py`(判定+可視化)の作成、メジャー実測との精度突き合わせ
 - [ ] **螺旋階段・S字階段の環境**: 回転した直方体で環境を組めるようにし、S字（L字の逆向き接続）とコーナー踏み面（回り階段）のどちらか一方をデモ化する。`horizontal_clearance_points` のAABB前提もこのとき拡張する
 - [x] **メッシュ→SDF受け口**: `build_lstairs` の環境をメッシュ（OBJ/PLY）として書き出し、trimesh で読み込んで点→メッシュ距離で衝突判定する `validator` を作り、既存の直方体方式と判定結果が一致することを確認する（iPhone LiDAR スキャンの受け入れ準備。open3d が入らない環境では trimesh のみで可） (2026-09-08, feature/mesh-sdf-input)
 - [x] **GIF・3Dビューアへの数字の反映**: 比較PNGにある「2人なら長さ162cmまで」「踊り場で余裕8cm」の注記を、GIF と 3Dビューア（HTML）にも入れて3つの成果物の情報を揃える (2026-09-08, feature/viz-sync-numbers)
@@ -22,6 +23,7 @@
 ## 完了済み
 
 - [x] 定番家具カタログの一斉判定(catalog.py、7種の一覧表) (2026-09-08, feature/furniture-catalog)
+- [x] スキャン取り込み前処理(scan_ingest.py: 単位推定・穴埋め・ボクセル水密化、MeshEnvの非水密フォールバック) (2026-09-19, feature/scan-ingest)
 
 - [x] L字階段（踊り場）の環境・保持拘束付きオラクル・可視化 (2026-09-01, feature/l-shaped-staircase)
 - [x] 運搬者ありの上限長さ二分探索 --find-max-length（2人なら162cmまで） (2026-09-08, feature/max-length-search)
