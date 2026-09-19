@@ -72,7 +72,7 @@ def isolate_object_points(path, assume_units=None, min_range=20.0, xy_bin=5.0):
     return v[sel]
 
 
-def load_furniture(path=None, mesh=None, points=None, assume_units=None, n_points=250):
+def load_furniture(path=None, mesh=None, points=None, assume_units=None, n_points=500):
     """家具スキャンを読み、OBB(有向境界箱)で姿勢を正規化して表面点
     (ローカル・中心原点・長辺がx)を返す。
 
@@ -213,24 +213,30 @@ def render_3d(furn, path, out_path, n_frames=60):
     import phase2_lstair_gif as gif
 
     outer, obstacles = L.build_lstairs()
-    half = np.asarray(furn["dims"], dtype=float) / 2.0
+    local = np.asarray(furn["local"], dtype=float)
+    # 点群の高さ(ローカルz)で色付けすると立体感が出る
+    czcol = local[:, 2]
     dense = gif.interpolate_path(path, L.W_ROT, step_cm=10.0)
     idx = np.linspace(0, len(dense) - 1, min(n_frames, len(dense))).round().astype(int)
     dense = [dense[i] for i in idx]
 
-    def furn_mesh(pose, color):
+    def furn_scatter(pose):
+        # きれいな箱ではなく、スキャンした実際の点群を姿勢変換して動かす
         pos, quat = pose
-        return v3.box_mesh(np.asarray(pos), p.g3.rotmat_from_quat(quat), half,
-                           color, opacity=0.92)
+        wp = (local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
+        return go.Scatter3d(
+            x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
+            marker=dict(size=2.6, color=czcol, colorscale="YlOrRd", showscale=False),
+            showlegend=False, hoverinfo="skip")
 
     fig = go.Figure()
-    for c, r, h in obstacles:  # 階段(灰)
-        fig.add_trace(v3.box_mesh(c, r, h, "#c9c9c9", opacity=1.0))
+    for c, r, h in obstacles:  # 階段(半透明の淡色にして家具を見やすく)
+        fig.add_trace(v3.box_mesh(c, r, h, "#c3ccd6", opacity=0.5))
     fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
-    fig.add_trace(furn_mesh(dense[0], "#2c6fbb"))  # 家具(初期)
+    fig.add_trace(furn_scatter(dense[0]))  # 家具(初期)
     dyn = [len(fig.data) - 1]
 
-    fig.frames = [go.Frame(data=[furn_mesh(pose, "#2c6fbb")], traces=dyn, name=str(k))
+    fig.frames = [go.Frame(data=[furn_scatter(pose)], traces=dyn, name=str(k))
                   for k, pose in enumerate(dense)]
     steps = [dict(method="animate", label="",
                   args=[[str(k)], dict(mode="immediate",
