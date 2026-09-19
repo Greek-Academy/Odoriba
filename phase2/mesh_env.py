@@ -80,7 +80,8 @@ class MeshEnv:
         pts = np.asarray(points)
         if self.watertight:
             return self._pq.signed_distance(pts)
-        return self._pq.distance(pts)
+        # 非水密: on_surfaceが返す表面までの絶対距離(非負)を使う
+        return self._pq.on_surface(pts)[1]
 
     def shape_clearance(self, points):
         """点群(形状の表面サンプル)の最悪クリアランス。
