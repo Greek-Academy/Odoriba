@@ -42,34 +42,49 @@ const RADIUS = {radius};
 const ALPHA = {alpha};
 
 const canvas = document.getElementById('c');
-const engine = new BABYLON.Engine(canvas, true);
+const engine = new BABYLON.Engine(canvas, true, {{antialias:true, adaptToDeviceRatio:true}});
 const scene = new BABYLON.Scene(engine);
 scene.useRightHandedSystem = true;                 // numpy(右手系)と揃える
-scene.clearColor = new BABYLON.Color4(0.055,0.067,0.086,1);
+scene.clearColor = new BABYLON.Color4(0.09,0.10,0.12,1);
+
+// サンドボックス相当の質感: 環境光(IBL)+ACESトーンマッピング。
+// PBRマテリアル(glTF由来)がこの環境で綺麗に陰影づけされる。
+scene.environmentTexture = BABYLON.CubeTexture.CreateFromPrefilteredData(
+  "https://assets.babylonjs.com/environments/environmentSpecular.env", scene);
+scene.environmentIntensity = 1.15;
+scene.imageProcessingConfiguration.toneMappingEnabled = true;
+scene.imageProcessingConfiguration.toneMappingType =
+  BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES;
+scene.imageProcessingConfiguration.exposure = 1.15;
+scene.imageProcessingConfiguration.contrast = 1.1;
 
 const target = new BABYLON.Vector3(TARGET[0],TARGET[1],TARGET[2]);
 const cam = new BABYLON.ArcRotateCamera('cam', -1.4, 1.15, RADIUS*2.2, target, scene);
 cam.upVector = new BABYLON.Vector3(0,0,1);          // Z-up
 cam.wheelPrecision = 0.4; cam.minZ = 1; cam.attachControl(canvas, true);
-new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.3,0.4,1), scene).intensity = 1.15;
-new BABYLON.HemisphericLight('h2', new BABYLON.Vector3(-0.3,-0.4,-1), scene).intensity = 0.5;
+cam.useAutoRotationBehavior = false;
+// IBLだけだと影が単調なので、弱い方向光を1つ足して立体感を出す
+const dl = new BABYLON.DirectionalLight('d', new BABYLON.Vector3(0.4,0.5,-1), scene);
+dl.intensity = 0.6;
 
 // 「手前の壁だけ」を消して中を見せる = クリッピング平面。
 // カメラと中心の間にある手前側の面を切り取る。回転すると平面も追従して、
 // 常にこちら側の壁だけが消える(全体は不透明のまま)。CUTは切り込みの深さ。
 const CUT = RADIUS * {cut};
 scene.onBeforeRenderObservable.add(() => {{
-  const dir = target.subtract(cam.position); dir.normalize();   // 奥向き
-  const pt = target.subtract(dir.scale(CUT));                    // 中心より手前
-  scene.clipPlane = BABYLON.Plane.FromPositionAndNormal(pt, dir.scale(-1));
+  const dir = target.subtract(cam.position); dir.normalize();   // カメラ->中心(奥向き)
+  const pt = target.subtract(dir.scale(CUT));                    // 中心より手前の点
+  // 法線を奥向き(dir)にして、手前側(カメラ〜pt)だけを切り取り、奥+中身を残す
+  scene.clipPlane = BABYLON.Plane.FromPositionAndNormal(pt, dir);
 }});
 
 // 家具(箱): 明るいオレンジのソリッド。長辺x/中間y/短辺z
 const box = BABYLON.MeshBuilder.CreateBox('box',
     {{width:DIMS[0], height:DIMS[1], depth:DIMS[2]}}, scene);
-const bm = new BABYLON.StandardMaterial('bm', scene);
-bm.emissiveColor = new BABYLON.Color3(1.0,0.45,0.08);
-bm.diffuseColor  = new BABYLON.Color3(1.0,0.45,0.08);
+const bm = new BABYLON.PBRMaterial('bm', scene);   // 環境光になじむPBRの箱
+bm.albedoColor = new BABYLON.Color3(0.95,0.42,0.08);
+bm.metallic = 0.0; bm.roughness = 0.55;
+bm.emissiveColor = new BABYLON.Color3(0.25,0.10,0.0);  // 少しだけ自発光で視認性
 box.material = bm; box.rotationQuaternion = new BABYLON.Quaternion();
 
 BABYLON.SceneLoader.AppendAsync("", GLB, scene).then(() => {{
