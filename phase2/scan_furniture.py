@@ -119,43 +119,61 @@ def _start_goal(h):
     return start, goal
 
 
-def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1)):
-    """スキャン家具がL字階段を通れるか(家具単体)。
+def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1), num_carriers=0):
+    """スキャン家具がL字階段を通れるか。
 
-    家具の外形寸法(dims)をL.FURN_*に入れてサンプラー・START/GOALを
-    整えつつ、クリアランス判定だけはスキャン点群で行う(validatorを差し替え)。
-    戻り値: dict(found, min_clearance, dims)
+    num_carriers=0: 家具単体(浮遊)。1/2: 運搬者ありで、L字階段の保持拘束
+    (人が床に立つ・手が届く・傾き上限)を課す。家具の外形寸法(dims)を
+    L.FURN_*に入れてサンプラー・START/GOAL・把持点を整えつつ、家具の
+    クリアランス判定だけはスキャン点群で行う(validatorを差し替え)。
+    戻り値: dict(found, min_clearance, dims, path, num_carriers)
     """
     local, dims = furn["local"], furn["dims"]
     orig = (L.FURN_L, L.FURN_W, L.FURN_H)
     L.FURN_L, L.FURN_W, L.FURN_H = map(float, dims)
+    with_human = num_carriers > 0
     try:
         outer, obstacles = L.build_lstairs()
         start, goal = _start_goal(dims[2])
 
-        def validator(pos, quat, with_human, outer, obstacles, num_carriers=None):
-            # 家具単体のみ(with_humanは無視)。スキャン点群で最小クリアランス
+        def furn_clear(pos, quat):
             return p.shape_clearance_3d(
-                furniture_world_points(local, pos, quat), outer, obstacles) >= 0
+                furniture_world_points(local, pos, quat), outer, obstacles)
+
+        def validator(pos, quat, wh, outer, obstacles, nc=None):
+            if furn_clear(pos, quat) < 0:
+                return False
+            if not with_human:
+                return True
+            # 運搬者あり: L字階段のオラクルと同じ保持拘束(家具の距離だけ
+            # スキャン点群に差し替え)。傾き上限・人が床に立つ・手が届く。
+            if L.with_tilt_violation(quat):
+                return False
+            for off in L.p.SIDE_OFFSETS:
+                placed = L.place_humans_lstair(pos, quat, off, num_carriers)
+                if placed is None:
+                    continue
+                if all(reach >= 0 and
+                       p.shape_clearance_3d(L.carrier_points(c), outer, obstacles) >= 0
+                       for c, reach in placed):
+                    return True
+            return False
 
         found = False
         min_clear = None
         found_path = None
         for sd in seeds:
             path = p.rrt_connect(
-                start, goal, with_human=False, outer=outer, obstacles=obstacles,
-                max_iter=max_iter, seed=sd, w_rot=L.W_ROT,
-                sampler=L.make_sampler(with_human=False), validator=validator)
+                start, goal, with_human=with_human, outer=outer, obstacles=obstacles,
+                num_carriers=num_carriers or None, max_iter=max_iter, seed=sd, w_rot=L.W_ROT,
+                sampler=L.make_sampler(with_human=with_human), validator=validator)
             if path is not None:
                 found = True
                 found_path = path
-                min_clear = min(
-                    p.shape_clearance_3d(furniture_world_points(local, ps, q),
-                                         outer, obstacles)
-                    for ps, q in path)
+                min_clear = min(furn_clear(ps, q) for ps, q in path)
                 break
         return {"found": found, "min_clearance": min_clear, "dims": dims,
-                "path": found_path}
+                "path": found_path, "num_carriers": num_carriers}
     finally:
         L.FURN_L, L.FURN_W, L.FURN_H = orig
 
@@ -280,6 +298,8 @@ if __name__ == "__main__":
     parser.add_argument("furniture", nargs="?", help="家具の OBJ/PLY")
     parser.add_argument("--assume-units", choices=("m", "cm", "mm"))
     parser.add_argument("--max-iter", type=int, default=3000)
+    parser.add_argument("--carriers", type=int, choices=(0, 1, 2), default=0,
+                        help="運搬者の人数(0=家具単体, 1/2=人ありで保持拘束を課す)")
     parser.add_argument("--raw", action="store_true",
                         help="床除去(切り出し)をせず、スキャン全体を家具として使う")
     parser.add_argument("--gif", metavar="OUT",
@@ -299,10 +319,11 @@ if __name__ == "__main__":
             print(f"床・周囲を除去して対象物を切り出し: {len(pts)}点")
             furn = load_furniture(points=pts)
         print(f"家具スキャン: dims(cm)= {furn['dims'].round(0)} (長辺x中間x短辺)")
-        res = judge_in_lstair(furn, max_iter=args.max_iter)
+        res = judge_in_lstair(furn, max_iter=args.max_iter, num_carriers=args.carriers)
+        who = "家具単体" if args.carriers == 0 else f"運搬者{args.carriers}人"
         verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
         mc = "" if res["min_clearance"] is None else f" / 最小クリアランス {res['min_clearance']:.1f}cm"
-        print(f"L字階段(幅{L.STAIR_WIDTH:.0f}cm・踊り場{L.STAIR_WIDTH:.0f}角): {verdict}{mc}")
+        print(f"L字階段(幅{L.STAIR_WIDTH:.0f}cm・踊り場{L.STAIR_WIDTH:.0f}角) / {who}: {verdict}{mc}")
         if args.gif or args.html:
             if res["path"] is None:
                 print("経路が見つからなかったので可視化は作れません(--max-iterを増やして再試行)")
