@@ -55,14 +55,32 @@ class MeshEnv:
     mesh は「自由空間」を表す水密メッシュ(内側にいる = ぶつかっていない)。
     """
 
-    def __init__(self, mesh):
-        assert mesh.is_watertight, "自由空間メッシュが水密でない(符号が信用できない)"
+    def __init__(self, mesh, require_watertight=True):
+        # 水密なら符号付き距離(内外の符号)が信用できる。実スキャンは
+        # 完全な水密化に失敗することがあるので、require_watertight=Falseなら
+        # 警告だけ出して先に進み、符号なし距離(表面までの距離)にフォール
+        # バックする。フォールバックでは内外の区別ができないため、
+        # クリアランスは常に非負になり「めり込み量(負)」は出せない
+        # (まず判定を回して形を確認するための応急モード)。
+        self.watertight = bool(mesh.is_watertight)
+        if require_watertight and not self.watertight:
+            raise ValueError("自由空間メッシュが水密でない(符号が信用できない)。"
+                             "require_watertight=Falseで応急的に符号なし距離を使える")
+        if not self.watertight:
+            print("警告: メッシュが水密でない。符号なし距離にフォールバックする"
+                  "(内外の区別ができず、めり込み量は0でクリップされる)")
         self.mesh = mesh
         self._pq = trimesh.proximity.ProximityQuery(mesh)
 
     def signed_clearance_points(self, points):
-        """各点の符号付きクリアランス(自由空間の内側なら正)。"""
-        return self._pq.signed_distance(np.asarray(points))
+        """各点の符号付きクリアランス(自由空間の内側なら正)。
+
+        水密でない場合は符号が付かないので、表面までの距離(非負)を返す。
+        """
+        pts = np.asarray(points)
+        if self.watertight:
+            return self._pq.signed_distance(pts)
+        return self._pq.distance(pts)
 
     def shape_clearance(self, points):
         """点群(形状の表面サンプル)の最悪クリアランス。
