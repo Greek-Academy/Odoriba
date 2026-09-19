@@ -91,55 +91,40 @@ def box_poses_along_stair(stair_mesh, box_dims, n=7):
     return poses
 
 
-def render_combined(stair_mesh, stair_col, box_local, box_col, poses, out_path):
-    """階段スキャン・家具スキャンを、それぞれの実際の色で描く3D HTML。
-    家具は姿勢を変えながら階段の中を動く。"""
+def render_combined(stair_mesh, stair_col, box_dims, poses, out_path):
+    """階段を面(サーフェス)で、家具を明るいソリッドな箱で描く3D HTML。
+    点群ではなくメッシュの面で描くので見た目が分かりやすい(Babylon.js相当の
+    面表示をplotlyのMesh3dで実現)。家具は姿勢を変えながら階段の中を動く。"""
     import plotly.graph_objects as go
+    import phase2_lstair_3d as v3
 
-    vs = np.asarray(stair_mesh.vertices)
-    # 階段はなるべく多くの点を使う(細かく見せる)。重すぎない上限で間引く。
-    if len(vs) > 45000:
-        idx = np.random.default_rng(0).choice(len(vs), 45000, replace=False)
-        vs = vs[idx]
-        stair_col = stair_col[idx] if stair_col is not None else None
-    stair_color = _rgb_strings(stair_col) if stair_col is not None else "#8a9099"
-    box_color = _rgb_strings(box_col) if box_col is not None else "#ffae42"
+    v = np.asarray(stair_mesh.vertices)
+    f = np.asarray(stair_mesh.faces)
+    # 階段: メッシュの面をそのまま(実際の色を頂点色に)。点ではなく面なので密。
+    stair_kw = {}
+    if stair_col is not None:
+        stair_kw["vertexcolor"] = stair_col.astype(np.uint8)
+    else:
+        stair_kw["color"] = "#9aa1ab"
+    stair_trace = go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2],
+                            i=f[:, 0], j=f[:, 1], k=f[:, 2],
+                            opacity=1.0, lighting=dict(ambient=0.6, diffuse=0.7),
+                            flatshading=True, name="stair", showscale=False,
+                            hoverinfo="skip", **stair_kw)
 
-    # 家具のOBBの半径(枠線用)。ローカル点の範囲から
-    half = (box_local.max(axis=0) - box_local.min(axis=0)) / 2.0
-    corners_local = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1)
-                              for sz in (-1, 1)]) * half
-    edges = [(0, 1), (0, 2), (1, 3), (2, 3), (4, 5), (4, 6), (5, 7), (6, 7),
-             (0, 4), (1, 5), (2, 6), (3, 7)]
+    half = np.asarray(box_dims, dtype=float) / 2.0
 
-    def box_traces(pose):
+    def box_trace(pose):
         pos, quat = pose
-        R = p.g3.rotmat_from_quat(quat)
-        wp = (box_local @ R.T) + np.asarray(pos)
-        pts = go.Scatter3d(  # 家具の実点群(大きめ)
-            x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
-            marker=dict(size=4.5, color=box_color), showlegend=False, hoverinfo="skip")
-        cw = (corners_local @ R.T) + np.asarray(pos)
-        xs, ys, zs = [], [], []
-        for a, b in edges:  # 明るい枠線で家具を目立たせる(埋もれ対策)
-            xs += [cw[a, 0], cw[b, 0], None]
-            ys += [cw[a, 1], cw[b, 1], None]
-            zs += [cw[a, 2], cw[b, 2], None]
-        frame = go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
-                             line=dict(color="#00e5ff", width=6),
-                             showlegend=False, hoverinfo="skip")
-        return [pts, frame]
+        # 明るいオレンジのソリッドな箱。面で描くので埋もれず分かりやすい
+        return v3.box_mesh(np.asarray(pos), p.g3.rotmat_from_quat(quat), half,
+                           "#ff7a1a", opacity=1.0)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter3d(  # 階段スキャン(実際の色・小さめの点で密に)
-        x=vs[:, 0], y=vs[:, 1], z=vs[:, 2], mode="markers",
-        marker=dict(size=1.5, color=stair_color, opacity=0.65),
-        showlegend=False, hoverinfo="skip"))
-    init = box_traces(poses[0])
-    for t in init:
-        fig.add_trace(t)
-    dyn = list(range(len(fig.data) - len(init), len(fig.data)))
-    fig.frames = [go.Frame(data=box_traces(ps), traces=dyn, name=str(k))
+    fig.add_trace(stair_trace)
+    fig.add_trace(box_trace(poses[0]))
+    dyn = [len(fig.data) - 1]
+    fig.frames = [go.Frame(data=[box_trace(ps)], traces=dyn, name=str(k))
                   for k, ps in enumerate(poses)]
 
     steps = [dict(method="animate", label=f"{k+1}",
@@ -147,8 +132,7 @@ def render_combined(stair_mesh, stair_col, box_local, box_col, poses, out_path):
                                        frame=dict(duration=0, redraw=True),
                                        transition=dict(duration=0))])
              for k in range(len(poses))]
-    # 箱の寸法(表示用): ローカル点の範囲から
-    d = box_local.max(axis=0) - box_local.min(axis=0)
+    d = np.asarray(box_dims, dtype=float)
     fig.update_layout(
         updatemenus=[dict(type="buttons", showactive=False, x=0.02, y=0.05,
                           buttons=[dict(label="Play", method="animate",
@@ -178,20 +162,12 @@ if __name__ == "__main__":
     stair_mesh, _ = sd.load_scan_zup(args.stair)
     stair_col = vertex_colors(stair_mesh)
     box_mesh, _ = sd.load_scan_zup(args.box)
-    box_pts, box_pt_col = isolate_box_colored(box_mesh)
+    box_pts, _ = isolate_box_colored(box_mesh)
+    # 家具の外形寸法(OBB)。表示は寸法のソリッド箱にするので点群は使わない
+    _, ext = trimesh.bounds.oriented_bounds(box_pts)
+    dims = np.sort(ext)[::-1]
 
-    # 箱の向きを揃える(OBB)。座標変換に合わせて色も同じ順序を保つ
-    T, ext = trimesh.bounds.oriented_bounds(box_pts)
-    local = trimesh.transform_points(box_pts, T)
-    order = np.argsort(ext)[::-1]
-    local = local[:, order]
-    dims = np.asarray(ext)[order]
-    if len(local) > 1500:  # 描画用に間引く(色も一緒に)
-        idx = np.random.default_rng(0).choice(len(local), 1500, replace=False)
-        local = local[idx]
-        box_pt_col = box_pt_col[idx] if box_pt_col is not None else None
-
-    print(f"階段スキャン: {len(stair_mesh.vertices)}点 (色{'あり' if stair_col is not None else 'なし'}) "
-          f"/ 家具dims= {dims.round(0)} cm (色{'あり' if box_pt_col is not None else 'なし'})")
+    print(f"階段スキャン: 面{len(stair_mesh.faces)} (色{'あり' if stair_col is not None else 'なし'}) "
+          f"/ 家具dims= {dims.round(0)} cm")
     poses = box_poses_along_stair(stair_mesh, dims, n=args.n)
-    render_combined(stair_mesh, stair_col, local, box_pt_col, poses, args.out)
+    render_combined(stair_mesh, stair_col, dims, poses, args.out)
