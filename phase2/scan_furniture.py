@@ -201,6 +201,59 @@ def render_gif(furn, path, out_path, fps=12, step_cm=10.0):
     print(f"saved gif to {out_path} ({len(dense)} frames)")
 
 
+def render_3d(furn, path, out_path, n_frames=60):
+    """スキャン家具がL字階段を通り抜ける様子を、ブラウザで回せる3D(HTML)にする。
+
+    phase2_lstair_3dの部品(階段の直方体・ワイヤーフレーム・再生UI)を
+    再利用し、家具はスキャン寸法の箱として経路に沿って動かす。見た目重視の
+    デモ用。plotly.jsを埋め込むのでネットなしでファイル1つで開ける。
+    """
+    import plotly.graph_objects as go
+    import phase2_lstair_3d as v3
+    import phase2_lstair_gif as gif
+
+    outer, obstacles = L.build_lstairs()
+    half = np.asarray(furn["dims"], dtype=float) / 2.0
+    dense = gif.interpolate_path(path, L.W_ROT, step_cm=10.0)
+    idx = np.linspace(0, len(dense) - 1, min(n_frames, len(dense))).round().astype(int)
+    dense = [dense[i] for i in idx]
+
+    def furn_mesh(pose, color):
+        pos, quat = pose
+        return v3.box_mesh(np.asarray(pos), p.g3.rotmat_from_quat(quat), half,
+                           color, opacity=0.92)
+
+    fig = go.Figure()
+    for c, r, h in obstacles:  # 階段(灰)
+        fig.add_trace(v3.box_mesh(c, r, h, "#c9c9c9", opacity=1.0))
+    fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
+    fig.add_trace(furn_mesh(dense[0], "#2c6fbb"))  # 家具(初期)
+    dyn = [len(fig.data) - 1]
+
+    fig.frames = [go.Frame(data=[furn_mesh(pose, "#2c6fbb")], traces=dyn, name=str(k))
+                  for k, pose in enumerate(dense)]
+    steps = [dict(method="animate", label="",
+                  args=[[str(k)], dict(mode="immediate",
+                                       frame=dict(duration=0, redraw=True),
+                                       transition=dict(duration=0))])
+             for k in range(len(dense))]
+    d = furn["dims"]
+    fig.update_layout(
+        updatemenus=[dict(type="buttons", showactive=False, x=0.02, y=0.05,
+                          buttons=[dict(label="Play", method="animate",
+                                        args=[None, dict(frame=dict(duration=60, redraw=True),
+                                                         transition=dict(duration=0),
+                                                         fromcurrent=True)])])],
+        sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04,
+                      currentvalue=dict(visible=False))],
+        title=dict(text=f"Scanned cardboard ({d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm) "
+                        "through the L-staircase -- drag to rotate", x=0.5),
+        scene=dict(aspectmode="data", camera=dict(eye=dict(x=-1.4, y=-1.5, z=0.9))),
+        margin=dict(l=0, r=0, t=50, b=0))
+    fig.write_html(out_path, include_plotlyjs=True, auto_play=False)
+    print(f"saved 3D viewer to {out_path}")
+
+
 def _selftest():
     """合成の箱(段ボール想定)で、寸法の取り出しと通過判定が動くか。"""
     print("=== 自己テスト: 合成の箱を家具スキャンに見立てる ===")
@@ -225,6 +278,8 @@ if __name__ == "__main__":
                         help="床除去(切り出し)をせず、スキャン全体を家具として使う")
     parser.add_argument("--gif", metavar="OUT",
                         help="通過経路を家具が浮いて通り抜けるGIFを書き出す")
+    parser.add_argument("--html", metavar="OUT",
+                        help="ブラウザで回せる3D(HTML)を書き出す(見た目重視)")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
@@ -242,10 +297,13 @@ if __name__ == "__main__":
         verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
         mc = "" if res["min_clearance"] is None else f" / 最小クリアランス {res['min_clearance']:.1f}cm"
         print(f"L字階段(幅{L.STAIR_WIDTH:.0f}cm・踊り場{L.STAIR_WIDTH:.0f}角): {verdict}{mc}")
-        if args.gif:
+        if args.gif or args.html:
             if res["path"] is None:
-                print("経路が見つからなかったのでGIFは作れません(--max-iterを増やして再試行)")
+                print("経路が見つからなかったので可視化は作れません(--max-iterを増やして再試行)")
             else:
-                render_gif(furn, res["path"], args.gif)
+                if args.gif:
+                    render_gif(furn, res["path"], args.gif)
+                if args.html:
+                    render_3d(furn, res["path"], args.html)
     else:
         parser.error("furniture を指定するか --selftest を使ってください")
