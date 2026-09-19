@@ -97,28 +97,49 @@ def render_combined(stair_mesh, stair_col, box_local, box_col, poses, out_path):
     import plotly.graph_objects as go
 
     vs = np.asarray(stair_mesh.vertices)
-    # 描画が重くならないよう階段点群を間引く(色も一緒に)
-    if len(vs) > 15000:
-        idx = np.random.default_rng(0).choice(len(vs), 15000, replace=False)
+    # 階段はなるべく多くの点を使う(細かく見せる)。重すぎない上限で間引く。
+    if len(vs) > 45000:
+        idx = np.random.default_rng(0).choice(len(vs), 45000, replace=False)
         vs = vs[idx]
         stair_col = stair_col[idx] if stair_col is not None else None
-    stair_color = _rgb_strings(stair_col) if stair_col is not None else "#b6bcc4"
-    box_color = _rgb_strings(box_col) if box_col is not None else "#c96a3a"
+    stair_color = _rgb_strings(stair_col) if stair_col is not None else "#8a9099"
+    box_color = _rgb_strings(box_col) if box_col is not None else "#ffae42"
 
-    def box_trace(pose):
+    # 家具のOBBの半径(枠線用)。ローカル点の範囲から
+    half = (box_local.max(axis=0) - box_local.min(axis=0)) / 2.0
+    corners_local = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1)
+                              for sz in (-1, 1)]) * half
+    edges = [(0, 1), (0, 2), (1, 3), (2, 3), (4, 5), (4, 6), (5, 7), (6, 7),
+             (0, 4), (1, 5), (2, 6), (3, 7)]
+
+    def box_traces(pose):
         pos, quat = pose
-        wp = (box_local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
-        return go.Scatter3d(
+        R = p.g3.rotmat_from_quat(quat)
+        wp = (box_local @ R.T) + np.asarray(pos)
+        pts = go.Scatter3d(  # 家具の実点群(大きめ)
             x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
-            marker=dict(size=3.0, color=box_color), showlegend=False, hoverinfo="skip")
+            marker=dict(size=4.5, color=box_color), showlegend=False, hoverinfo="skip")
+        cw = (corners_local @ R.T) + np.asarray(pos)
+        xs, ys, zs = [], [], []
+        for a, b in edges:  # 明るい枠線で家具を目立たせる(埋もれ対策)
+            xs += [cw[a, 0], cw[b, 0], None]
+            ys += [cw[a, 1], cw[b, 1], None]
+            zs += [cw[a, 2], cw[b, 2], None]
+        frame = go.Scatter3d(x=xs, y=ys, z=zs, mode="lines",
+                             line=dict(color="#00e5ff", width=6),
+                             showlegend=False, hoverinfo="skip")
+        return [pts, frame]
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter3d(  # 階段スキャン(実際の色)
+    fig.add_trace(go.Scatter3d(  # 階段スキャン(実際の色・小さめの点で密に)
         x=vs[:, 0], y=vs[:, 1], z=vs[:, 2], mode="markers",
-        marker=dict(size=1.6, color=stair_color), showlegend=False, hoverinfo="skip"))
-    fig.add_trace(box_trace(poses[0]))
-    dyn = [len(fig.data) - 1]
-    fig.frames = [go.Frame(data=[box_trace(ps)], traces=dyn, name=str(k))
+        marker=dict(size=1.5, color=stair_color, opacity=0.65),
+        showlegend=False, hoverinfo="skip"))
+    init = box_traces(poses[0])
+    for t in init:
+        fig.add_trace(t)
+    dyn = list(range(len(fig.data) - len(init), len(fig.data)))
+    fig.frames = [go.Frame(data=box_traces(ps), traces=dyn, name=str(k))
                   for k, ps in enumerate(poses)]
 
     steps = [dict(method="animate", label=f"{k+1}",
@@ -165,8 +186,8 @@ if __name__ == "__main__":
     order = np.argsort(ext)[::-1]
     local = local[:, order]
     dims = np.asarray(ext)[order]
-    if len(local) > 800:  # 描画用に間引く(色も一緒に)
-        idx = np.random.default_rng(0).choice(len(local), 800, replace=False)
+    if len(local) > 1500:  # 描画用に間引く(色も一緒に)
+        idx = np.random.default_rng(0).choice(len(local), 1500, replace=False)
         local = local[idx]
         box_pt_col = box_pt_col[idx] if box_pt_col is not None else None
 
