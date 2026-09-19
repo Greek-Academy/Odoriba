@@ -21,7 +21,6 @@ MeshEnv(応急モード=符号なし距離)で家具のクリアランスを評�
 """
 
 import argparse
-import os
 
 import numpy as np
 import matplotlib
@@ -66,6 +65,81 @@ def auto_start_pose(mesh):
     return np.array([cx, cy, cz]), quat
 
 
+def centerline(mesh, band=30.0, step=25.0, smooth=3):
+    """高さ帯ごとの水平重心をつないで、階段の中心線(下から上への経路)を
+    近似する。戻り値: (N,3)の点列(cm, Z昇順)。
+
+    スキャンはノイズや飛び点があるので、移動平均で軽く滑らかにする。
+    """
+    v = np.asarray(mesh.vertices)
+    zmin, zmax = v[:, 2].min(), v[:, 2].max()
+    pts = []
+    for z in np.arange(zmin + band, zmax - band, step):
+        b = v[(v[:, 2] >= z - band / 2) & (v[:, 2] < z + band / 2)]
+        if len(b) < 50:
+            continue
+        pts.append([b[:, 0].mean(), b[:, 1].mean(), z])
+    pts = np.array(pts)
+    if smooth > 1 and len(pts) >= smooth:
+        k = np.ones(smooth) / smooth
+        for c in (0, 1):  # x, y だけ平滑化(高さzはそのまま)
+            pts[:, c] = np.convolve(pts[:, c], k, mode="same")
+    return pts
+
+
+def carry_sequence(mesh, env, n=6):
+    """中心線に沿って家具をn箇所に置き、各位置のクリアランスを返す。
+
+    向きは中心線の水平方向の接線に長軸(ローカルx)を合わせる。傾きは
+    その区間の勾配(高さ変化/水平移動)に合わせてピッチさせる
+    (階段では家具を勾配なりに傾けて運ぶため)。
+    戻り値: [(pos, quat, clearance), ...]
+    """
+    line = centerline(mesh)
+    idx = np.linspace(0, len(line) - 1, n).round().astype(int)
+    out = []
+    for i in idx:
+        pos = line[i].copy()
+        pos[2] += L.FURN_H / 2  # 歩行面の上に載せる近似
+        # 接線(前後の点差)からヨーと勾配ピッチを出す
+        a = line[max(i - 1, 0)]
+        b = line[min(i + 1, len(line) - 1)]
+        d = b - a
+        yaw = np.degrees(np.arctan2(d[1], d[0]))
+        horiz = np.hypot(d[0], d[1])
+        pitch = np.degrees(np.arctan2(d[2], horiz)) if horiz > 1e-6 else 0.0
+        quat = L._pose(yaw, min(pitch, L.MAX_TILT_DEG)).as_quat()
+        out.append((pos, quat, env.furniture_clearance(pos, quat)))
+    return out
+
+
+def render_sequence(mesh, seq, out_path):
+    """scanの点群に、運搬シーケンスの家具(下=緑→上=青)を重ねて描く。"""
+    v = np.asarray(mesh.vertices)
+    fig, ax = plt.subplots(1, 2, figsize=(15, 7))
+    views = [((0, 1), "top (X-Y)"), ((0, 2), "side (X-Z, Z=height)")]
+    # winterは0.0=青 -> 1.0=緑。下から上へ 青->緑 に着色する。
+    colors = plt.cm.winter(np.linspace(0, 1, len(seq)))
+    for a, ((i, j), t) in zip(ax, views):
+        a.scatter(v[::15, i], v[::15, j], s=1, c="#c4c4c4", zorder=0)
+        for (pos, quat, _), col in zip(seq, colors):
+            fp = L.furniture_points(pos, quat)
+            a.scatter(fp[:, i], fp[:, j], s=6, color=col, zorder=2)
+        a.set_title(t)
+        a.set_aspect("equal")
+    # クリアランスの定量値はここでは出さない: 中心線=スキャン点群の重心
+    # なので家具がほぼ常に点の近く(距離~0)になり、符号なし距離では意味の
+    # ある余裕にならない。定量化は水密化(符号付き距離)の後(BACKLOG参照)。
+    fig.suptitle(f"Furniture carried up the REAL scanned staircase "
+                 f"({L.FURN_L:.0f}x{L.FURN_W:.0f}x{L.FURN_H:.0f}cm, blue=bottom -> green=top)\n"
+                 f"geometry/placement demo on real scan data "
+                 f"(quantitative clearance needs the watertight step)", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    print(f"saved figure to {out_path}")
+
+
 def render(mesh, pos, quat, clearance, out_path):
     """scanの点群(灰)に家具(青)を重ねて、上面図と側面図で描く。"""
     v = np.asarray(mesh.vertices)
@@ -96,6 +170,8 @@ if __name__ == "__main__":
                         help="家具の中心位置(cm)。省略時は自動当て推量")
     parser.add_argument("--yaw", type=float, default=0.0, help="ヨー(度)")
     parser.add_argument("--pitch", type=float, default=0.0, help="ピッチ=傾き(度)")
+    parser.add_argument("--sequence", action="store_true",
+                        help="中心線に沿って家具を並べた運搬シーケンス図を描く")
     parser.add_argument("--out", default="scan_demo.png")
     args = parser.parse_args()
 
@@ -105,6 +181,14 @@ if __name__ == "__main__":
           f"x {info['extents_cm'][2]:.0f} (Z=高さ)")
 
     env = me.MeshEnv(mesh, require_watertight=False)
+
+    if args.sequence:
+        seq = carry_sequence(mesh, env)
+        for k, (pos, _, c) in enumerate(seq):
+            print(f"  位置{k+1}/{len(seq)}: 中心={pos.round(0)} "
+                  f"クリアランス(符号なし)={c:.1f}cm")
+        render_sequence(mesh, seq, args.out)
+        raise SystemExit(0)
 
     if args.pos is not None:
         pos = np.array(args.pos)
