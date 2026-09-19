@@ -219,73 +219,104 @@ def render_gif(furn, path, out_path, fps=12, step_cm=10.0):
     print(f"saved gif to {out_path} ({len(dense)} frames)")
 
 
-def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
-    """スキャン家具がL字階段を通り抜ける様子を、ブラウザで回せる3D(HTML)にする。
+# 3Dの配色(まとまりのあるパレット)とライティング
+_C_STAIR = "#c7a97b"     # 階段: 木目調の暖色
+_C_FURN = "#2e7dd7"      # 家具: 目立つ青
+_C_CARRIER = "#e8663a"   # 運搬者: オレンジ
+_C_BG = "#12161d"        # 背景: 締まった暗色
+_LIGHT = dict(ambient=0.55, diffuse=0.95, specular=0.2, roughness=0.55, fresnel=0.15)
 
-    phase2_lstair_3dの部品(階段の直方体・ワイヤーフレーム・再生UI)を
-    再利用し、家具はスキャンの実点群を経路に沿って動かす。num_carriers>0なら
-    運搬者(円柱)も各フレームで描く。plotly.jsを埋め込みオフラインで開ける。
-    """
+
+def _box_mesh_lit(center, rot, half, color, lightpos):
+    """ライティング付きの直方体Mesh3d(v3.box_meshにlightingを足した版)。"""
     import plotly.graph_objects as go
     import phase2_lstair_3d as v3
+    v = p.g3.obb_corners(np.asarray(center), rot, np.asarray(half))
+    t = v3._BOX_TRI
+    return go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2], i=t[:, 0], j=t[:, 1], k=t[:, 2],
+                     color=color, flatshading=True, lighting=_LIGHT,
+                     lightposition=lightpos, showscale=False, hoverinfo="skip")
+
+
+def _cyl_mesh_lit(center, radius, half_h, color, lightpos):
+    import plotly.graph_objects as go
+    import phase2_lstair_3d as v3
+    vv, tt = v3._cylinder_verts_tris(np.asarray(center), radius, half_h)
+    return go.Mesh3d(x=vv[:, 0], y=vv[:, 1], z=vv[:, 2], i=tt[:, 0], j=tt[:, 1], k=tt[:, 2],
+                     color=color, flatshading=True, lighting=_LIGHT,
+                     lightposition=lightpos, showscale=False, hoverinfo="skip")
+
+
+def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
+    """家具がL字階段を通り抜ける様子を、ライティング付きのきれいな3D(HTML)に。
+
+    階段は暖色のソリッド、家具は青のソリッドな箱、運搬者はオレンジの円柱。
+    Mesh3dにライティングを効かせて立体感を出す。num_carriers>0なら運搬者も
+    各フレームで描く。plotly.jsを埋め込みオフラインで開ける。
+    """
+    import plotly.graph_objects as go
     import phase2_lstair_gif as gif
 
     outer, obstacles = L.build_lstairs()
-    local = np.asarray(furn["local"], dtype=float)
-    czcol = local[:, 2]  # 高さで色付け(立体感)
-    # 運搬者の把持点は家具の長辺端に置くので、FURN_Lをスキャン寸法に合わせる
     orig = (L.FURN_L, L.FURN_W, L.FURN_H)
     L.FURN_L, L.FURN_W, L.FURN_H = map(float, furn["dims"])
+    half_furn = np.asarray(furn["dims"], dtype=float) / 2.0
     dense = gif.interpolate_path(path, L.W_ROT, step_cm=10.0)
     idx = np.linspace(0, len(dense) - 1, min(n_frames, len(dense))).round().astype(int)
     dense = [dense[i] for i in idx]
 
+    # ライトは環境の高い角に置く
+    hi = np.max([c + h for c, _, h in obstacles], axis=0)
+    lightpos = dict(x=float(hi[0] * 1.5), y=float(-hi[1]), z=float(hi[2] * 2))
+
     def frame_traces(pose):
         pos, quat = pose
-        wp = (local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
-        traces = [go.Scatter3d(
-            x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
-            marker=dict(size=2.6, color=czcol, colorscale="YlOrRd", showscale=False),
-            showlegend=False, hoverinfo="skip")]
+        R = p.g3.rotmat_from_quat(quat)
+        traces = [_box_mesh_lit(np.asarray(pos), R, half_furn, _C_FURN, lightpos)]
         if num_carriers > 0:
             for c in L.best_human_positions_lstair(pos, quat, num_carriers,
                                                    outer, obstacles):
-                traces.append(v3.cylinder_mesh(np.asarray(c), L.p.HUMAN_R,
-                                               L._CARRIER_HALF_H, "#3a7d44", opacity=0.85))
+                traces.append(_cyl_mesh_lit(c, L.p.HUMAN_R, L._CARRIER_HALF_H,
+                                            _C_CARRIER, lightpos))
         return traces
 
     try:
         fig = go.Figure()
-        for c, r, h in obstacles:  # 階段(半透明の淡色にして家具を見やすく)
-            fig.add_trace(v3.box_mesh(c, r, h, "#c3ccd6", opacity=0.5))
-        fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
+        for c, r, h in obstacles:  # 階段: 暖色のソリッド+ライティング
+            fig.add_trace(_box_mesh_lit(c, r, h, _C_STAIR, lightpos))
         init = frame_traces(dense[0])
         for t in init:
             fig.add_trace(t)
         dyn = list(range(len(fig.data) - len(init), len(fig.data)))
-
-        # フレームごとにトレース数が一定になるよう、運搬者数は固定
         fig.frames = [go.Frame(data=frame_traces(pose), traces=dyn, name=str(k))
                       for k, pose in enumerate(dense)]
     finally:
         L.FURN_L, L.FURN_W, L.FURN_H = orig
+
     steps = [dict(method="animate", label="",
                   args=[[str(k)], dict(mode="immediate",
                                        frame=dict(duration=0, redraw=True),
                                        transition=dict(duration=0))])
              for k in range(len(dense))]
     d = furn["dims"]
+    noaxis = dict(visible=False, showgrid=False, showbackground=False)
     fig.update_layout(
+        paper_bgcolor=_C_BG, font=dict(color="#e6e6e6"),
         updatemenus=[dict(type="buttons", showactive=False, x=0.02, y=0.05,
-                          buttons=[dict(label="Play", method="animate",
+                          bgcolor="#2a3340", font=dict(color="#e6e6e6"),
+                          buttons=[dict(label="▶ Play", method="animate",
                                         args=[None, dict(frame=dict(duration=60, redraw=True),
                                                          transition=dict(duration=0),
                                                          fromcurrent=True)])])],
         sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04,
                       currentvalue=dict(visible=False))],
-        title=dict(text=f"Scanned cardboard ({d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm) "
-                        "through the L-staircase -- drag to rotate", x=0.5),
-        scene=dict(aspectmode="data", camera=dict(eye=dict(x=-1.4, y=-1.5, z=0.9))),
+        title=dict(text=f"L-staircase (width {L.STAIR_WIDTH:.0f}cm) / "
+                        f"furniture {d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm"
+                        + (f" + {num_carriers} carriers" if num_carriers else "")
+                        + " -- drag to rotate", x=0.5),
+        scene=dict(aspectmode="data", bgcolor=_C_BG,
+                   xaxis=noaxis, yaxis=noaxis, zaxis=noaxis,
+                   camera=dict(eye=dict(x=-1.4, y=-1.5, z=0.9))),
         margin=dict(l=0, r=0, t=50, b=0))
     fig.write_html(out_path, include_plotlyjs=True, auto_play=False)
     print(f"saved 3D viewer to {out_path}")
