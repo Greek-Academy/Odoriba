@@ -91,16 +91,17 @@ def box_poses_along_stair(stair_mesh, box_dims, n=7):
     return poses
 
 
-def render_combined(stair_mesh, stair_col, box_dims, poses, out_path):
+def render_combined(stair_mesh, stair_col, box_dims, poses, out_path, stair_opacity=0.35):
     """階段を面(サーフェス)で、家具を明るいソリッドな箱で描く3D HTML。
     点群ではなくメッシュの面で描くので見た目が分かりやすい(Babylon.js相当の
-    面表示をplotlyのMesh3dで実現)。家具は姿勢を変えながら階段の中を動く。"""
+    面表示をplotlyのMesh3dで実現)。階段は半透明にして、手前の壁越しに中の
+    家具が見えるようにする。家具は姿勢を変えながら階段の中を動く。"""
     import plotly.graph_objects as go
     import phase2_lstair_3d as v3
 
     v = np.asarray(stair_mesh.vertices)
     f = np.asarray(stair_mesh.faces)
-    # 階段: メッシュの面をそのまま(実際の色を頂点色に)。点ではなく面なので密。
+    # 階段: メッシュの面をそのまま(実際の色を頂点色に)。半透明にして中を見せる。
     stair_kw = {}
     if stair_col is not None:
         stair_kw["vertexcolor"] = stair_col.astype(np.uint8)
@@ -108,7 +109,7 @@ def render_combined(stair_mesh, stair_col, box_dims, poses, out_path):
         stair_kw["color"] = "#9aa1ab"
     stair_trace = go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2],
                             i=f[:, 0], j=f[:, 1], k=f[:, 2],
-                            opacity=1.0, lighting=dict(ambient=0.6, diffuse=0.7),
+                            opacity=stair_opacity, lighting=dict(ambient=0.8, diffuse=0.5),
                             flatshading=True, name="stair", showscale=False,
                             hoverinfo="skip", **stair_kw)
 
@@ -156,6 +157,8 @@ if __name__ == "__main__":
     parser.add_argument("stair", help="階段のスキャン OBJ/PLY")
     parser.add_argument("box", help="家具のスキャン OBJ/PLY")
     parser.add_argument("--n", type=int, default=7, help="並べる姿勢の数")
+    parser.add_argument("--stair-opacity", type=float, default=0.35,
+                        help="階段の不透明度(小さいほど中が透けて見える)")
     parser.add_argument("--out", default="scan_combined.html")
     args = parser.parse_args()
 
@@ -170,4 +173,5 @@ if __name__ == "__main__":
     print(f"階段スキャン: 面{len(stair_mesh.faces)} (色{'あり' if stair_col is not None else 'なし'}) "
           f"/ 家具dims= {dims.round(0)} cm")
     poses = box_poses_along_stair(stair_mesh, dims, n=args.n)
-    render_combined(stair_mesh, stair_col, dims, poses, args.out)
+    render_combined(stair_mesh, stair_col, dims, poses, args.out,
+                    stair_opacity=args.stair_opacity)
