@@ -219,12 +219,12 @@ def render_gif(furn, path, out_path, fps=12, step_cm=10.0):
     print(f"saved gif to {out_path} ({len(dense)} frames)")
 
 
-def render_3d(furn, path, out_path, n_frames=60):
+def render_3d(furn, path, out_path, n_frames=60, num_carriers=0):
     """スキャン家具がL字階段を通り抜ける様子を、ブラウザで回せる3D(HTML)にする。
 
     phase2_lstair_3dの部品(階段の直方体・ワイヤーフレーム・再生UI)を
-    再利用し、家具はスキャン寸法の箱として経路に沿って動かす。見た目重視の
-    デモ用。plotly.jsを埋め込むのでネットなしでファイル1つで開ける。
+    再利用し、家具はスキャンの実点群を経路に沿って動かす。num_carriers>0なら
+    運搬者(円柱)も各フレームで描く。plotly.jsを埋め込みオフラインで開ける。
     """
     import plotly.graph_objects as go
     import phase2_lstair_3d as v3
@@ -232,30 +232,43 @@ def render_3d(furn, path, out_path, n_frames=60):
 
     outer, obstacles = L.build_lstairs()
     local = np.asarray(furn["local"], dtype=float)
-    # 点群の高さ(ローカルz)で色付けすると立体感が出る
-    czcol = local[:, 2]
+    czcol = local[:, 2]  # 高さで色付け(立体感)
+    # 運搬者の把持点は家具の長辺端に置くので、FURN_Lをスキャン寸法に合わせる
+    orig = (L.FURN_L, L.FURN_W, L.FURN_H)
+    L.FURN_L, L.FURN_W, L.FURN_H = map(float, furn["dims"])
     dense = gif.interpolate_path(path, L.W_ROT, step_cm=10.0)
     idx = np.linspace(0, len(dense) - 1, min(n_frames, len(dense))).round().astype(int)
     dense = [dense[i] for i in idx]
 
-    def furn_scatter(pose):
-        # きれいな箱ではなく、スキャンした実際の点群を姿勢変換して動かす
+    def frame_traces(pose):
         pos, quat = pose
         wp = (local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
-        return go.Scatter3d(
+        traces = [go.Scatter3d(
             x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
             marker=dict(size=2.6, color=czcol, colorscale="YlOrRd", showscale=False),
-            showlegend=False, hoverinfo="skip")
+            showlegend=False, hoverinfo="skip")]
+        if num_carriers > 0:
+            for c in L.best_human_positions_lstair(pos, quat, num_carriers,
+                                                   outer, obstacles):
+                traces.append(v3.cylinder_mesh(np.asarray(c), L.p.HUMAN_R,
+                                               L._CARRIER_HALF_H, "#3a7d44", opacity=0.85))
+        return traces
 
-    fig = go.Figure()
-    for c, r, h in obstacles:  # 階段(半透明の淡色にして家具を見やすく)
-        fig.add_trace(v3.box_mesh(c, r, h, "#c3ccd6", opacity=0.5))
-    fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
-    fig.add_trace(furn_scatter(dense[0]))  # 家具(初期)
-    dyn = [len(fig.data) - 1]
+    try:
+        fig = go.Figure()
+        for c, r, h in obstacles:  # 階段(半透明の淡色にして家具を見やすく)
+            fig.add_trace(v3.box_mesh(c, r, h, "#c3ccd6", opacity=0.5))
+        fig.add_trace(v3.outer_wireframe(outer))  # 階段室の輪郭
+        init = frame_traces(dense[0])
+        for t in init:
+            fig.add_trace(t)
+        dyn = list(range(len(fig.data) - len(init), len(fig.data)))
 
-    fig.frames = [go.Frame(data=[furn_scatter(pose)], traces=dyn, name=str(k))
-                  for k, pose in enumerate(dense)]
+        # フレームごとにトレース数が一定になるよう、運搬者数は固定
+        fig.frames = [go.Frame(data=frame_traces(pose), traces=dyn, name=str(k))
+                      for k, pose in enumerate(dense)]
+    finally:
+        L.FURN_L, L.FURN_W, L.FURN_H = orig
     steps = [dict(method="animate", label="",
                   args=[[str(k)], dict(mode="immediate",
                                        frame=dict(duration=0, redraw=True),
@@ -331,6 +344,6 @@ if __name__ == "__main__":
                 if args.gif:
                     render_gif(furn, res["path"], args.gif)
                 if args.html:
-                    render_3d(furn, res["path"], args.html)
+                    render_3d(furn, res["path"], args.html, num_carriers=args.carriers)
     else:
         parser.error("furniture を指定するか --selftest を使ってください")
