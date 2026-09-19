@@ -140,6 +140,7 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1)):
 
         found = False
         min_clear = None
+        found_path = None
         for sd in seeds:
             path = p.rrt_connect(
                 start, goal, with_human=False, outer=outer, obstacles=obstacles,
@@ -147,14 +148,57 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1)):
                 sampler=L.make_sampler(with_human=False), validator=validator)
             if path is not None:
                 found = True
+                found_path = path
                 min_clear = min(
                     p.shape_clearance_3d(furniture_world_points(local, ps, q),
                                          outer, obstacles)
                     for ps, q in path)
                 break
-        return {"found": found, "min_clearance": min_clear, "dims": dims}
+        return {"found": found, "min_clearance": min_clear, "dims": dims,
+                "path": found_path}
     finally:
         L.FURN_L, L.FURN_W, L.FURN_H = orig
+
+
+def render_gif(furn, path, out_path, fps=12, step_cm=10.0):
+    """スキャン家具が経路に沿ってL字階段を通り抜けるGIF(運搬者なし=浮いて通る)。
+
+    レイアウトはphase2_lstairのGIFと同じ2パネル(上面図/展開側面図)。
+    家具はスキャンの点群をそのまま姿勢変換して散布図で描く。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.animation as animation
+    import phase2_lstair_viz as viz
+    import phase2_lstair_gif as gif
+
+    local = furn["local"]
+    outer, obstacles = L.build_lstairs()
+    dense = gif.interpolate_path(path, L.W_ROT, step_cm=step_cm)
+
+    fig, (ax_t, ax_s) = plt.subplots(1, 2, figsize=(15, 6.5))
+
+    def frame(k):
+        ax_t.clear()
+        ax_s.clear()
+        viz.draw_env_top(ax_t, "top view")
+        viz.draw_env_side(ax_s, "unfolded side view")
+        pos, quat = dense[k]
+        wp = furniture_world_points(local, pos, quat)
+        ax_t.scatter(wp[:, 0], wp[:, 1], s=4, c="tab:blue", zorder=3)
+        s = np.array([L.skeleton_s(x, y) for x, y, _ in wp])
+        ax_s.scatter(s, wp[:, 2], s=4, c="tab:blue", zorder=3)
+        d = furn["dims"]
+        fig.suptitle(f"Scanned cardboard ({d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm) "
+                     f"carried up the L-staircase (furniture floating, no carriers)",
+                     fontsize=12)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+
+    anim = animation.FuncAnimation(fig, frame, frames=len(dense), interval=1000 / fps)
+    anim.save(out_path, writer=animation.PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"saved gif to {out_path} ({len(dense)} frames)")
 
 
 def _selftest():
@@ -179,6 +223,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-iter", type=int, default=3000)
     parser.add_argument("--raw", action="store_true",
                         help="床除去(切り出し)をせず、スキャン全体を家具として使う")
+    parser.add_argument("--gif", metavar="OUT",
+                        help="通過経路を家具が浮いて通り抜けるGIFを書き出す")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
@@ -196,5 +242,10 @@ if __name__ == "__main__":
         verdict = "PASS(通る)" if res["found"] else "BLOCKED(この試行では見つからず)"
         mc = "" if res["min_clearance"] is None else f" / 最小クリアランス {res['min_clearance']:.1f}cm"
         print(f"L字階段(幅{L.STAIR_WIDTH:.0f}cm・踊り場{L.STAIR_WIDTH:.0f}角): {verdict}{mc}")
+        if args.gif:
+            if res["path"] is None:
+                print("経路が見つからなかったのでGIFは作れません(--max-iterを増やして再試行)")
+            else:
+                render_gif(furn, res["path"], args.gif)
     else:
         parser.error("furniture を指定するか --selftest を使ってください")
