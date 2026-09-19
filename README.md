@@ -48,6 +48,8 @@ python scan_furniture.py <furniture.obj> --html out.html # 回せる3Dで通り�
 python scan_combined.py <stair.obj> <box.obj>   # 実スキャン家具×実スキャン階段の組み合わせ3D
 python scan_babylon.py <stair.obj> <box.obj>    # Babylon.js版(テクスチャ半透明・見た目重視)
 python virtual_demo.py --width 90 --rise 18 --tread 25 --steps 8 --furniture 150 45 40 --carriers 2 --html out.html  # 数値から仮想階段を組んで家具を通す
+python measure_stairs.py stair.obj              # スキャンから階段寸法を計測
+python virtual_demo.py --measure-stair stair.obj --furniture-scan box.obj --html out.html  # 計測値で仮想階段を組んで通す
 python catalog.py                           # 定番家具7種の一斉判定表(15〜30分。--table-onlyで保存済み結果の表示のみ)
 ```
 
