@@ -44,6 +44,7 @@ python scan_demo.py <scan.obj>              # 実スキャン階段に家具を�
 python scan_furniture.py --selftest        # スキャン家具の通過判定の自己テスト
 python scan_furniture.py <furniture.obj>    # スキャンした家具がL字階段を通れるか判定
 python scan_furniture.py <furniture.obj> --gif out.gif  # 通り抜けるアニメGIFを書き出す
+python scan_furniture.py <furniture.obj> --html out.html # 回せる3Dで通り抜けを書き出す
 python catalog.py                           # 定番家具7種の一斉判定表(15〜30分。--table-onlyで保存済み結果の表示のみ)
 ```
 
