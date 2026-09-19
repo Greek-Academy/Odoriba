@@ -40,6 +40,7 @@ python phase2_lstair.py --find-max-length   # 運搬者ありで通る最大長�
 python mesh_env.py                          # メッシュ受け口と直方体方式の判定一致チェック(LiDAR受け入れ準備)
 python scan_ingest.py --selftest            # スキャン取り込み前処理の自己テスト(実スキャン不要)
 python scan_ingest.py <scan.obj>            # 実スキャンOBJ/PLYを水密メッシュに整えて書き出す
+python scan_demo.py <scan.obj>              # 実スキャン階段に家具を置いてクリアランスを可視化
 python catalog.py                           # 定番家具7種の一斉判定表(15〜30分。--table-onlyで保存済み結果の表示のみ)
 ```
 
