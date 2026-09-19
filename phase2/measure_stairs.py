@@ -20,45 +20,72 @@ import scan_demo as sd
 def measure(path, assume_units=None):
     """スキャンOBJ/PLYから階段寸法を計測して dict で返す。
 
-    戻り値キー: rise, tread, width, n_steps_total, total_height,
-                confidence(各項目の信頼度メモ)
+    水平な面(踏み面・踊り場・床)だけを使うのが要点。壁など垂直面を
+    除外することで、幅が壁を巻き込んで過大になるのを防ぎ、段レベルごとの
+    重心の水平移動から踏み面を求める(中心線の勾配より安定・正確)。
+
+    戻り値キー: rise, tread, width, n_steps_total, total_height, confidence
     """
     m, _ = sd.load_scan_zup(path, assume_units)
     v = np.asarray(m.vertices)
     f = np.asarray(m.faces)
     n = np.asarray(m.face_normals)
-    z = v[:, 2]
-    total_height = float(np.ptp(z))
+    total_height = float(np.ptp(v[:, 2]))
 
-    # --- 蹴上げ: 水平な面(法線ほぼ鉛直)の中心高さのピーク間隔 ---
-    horiz = np.abs(n[:, 2]) > 0.85
-    fz = v[f[horiz]].mean(axis=1)[:, 2]
-    hist, edges = np.histogram(fz, bins=np.arange(fz.min(), fz.max() + 2, 2))
+    # 水平な面(法線がほぼ鉛直)の中心 = 踏み面・踊り場・床の点
+    horiz = np.abs(n[:, 2]) > 0.9
+    fc = v[f[horiz]].mean(axis=1)
+    z = fc[:, 2]
+
+    # --- 蹴上げ: 水平面の高さヒストのピーク間隔 ---
+    hist, edges = np.histogram(z, bins=np.arange(z.min(), z.max() + 2, 2))
     peaks = [edges[i] + 1 for i in range(1, len(hist) - 1)
-             if hist[i] > hist[i - 1] and hist[i] >= hist[i + 1]
-             and hist[i] > hist.max() * 0.15]
+             if hist[i] >= hist[i - 1] and hist[i] >= hist[i + 1]
+             and hist[i] > hist.max() * 0.12]
     gaps = np.diff(sorted(peaks)) if len(peaks) >= 2 else np.array([])
-    gaps = gaps[(gaps > 8) & (gaps < 30)]           # 蹴上げらしい間隔だけ
+    gaps = gaps[(gaps > 8) & (gaps < 30)]
     rise = float(np.median(gaps)) if len(gaps) else 18.0
-    n_steps_total = int(round(total_height / rise)) if rise > 0 else 0
 
-    # --- 踏み面: 中心線の勾配 dz/d水平 から (tread = rise / 勾配) ---
-    line = sd.centerline(m)
-    d = np.diff(line, axis=0)
-    dz, dh = d[:, 2], np.hypot(d[:, 0], d[:, 1])
-    asc = (dz > 1) & (dh > 1)
-    slope = float(np.median(dz[asc] / dh[asc])) if asc.any() else 1.0
-    tread = float(rise / slope) if slope > 0 else 26.0
+    # --- 段レベルに割り当て(蹴上げ間隔)、各レベルの踏み面重心 ---
+    lo = z.min()
+    levels = {}
+    for pz, pt in zip(z, fc):
+        levels.setdefault(int(round((pz - lo) / rise)), []).append(pt)
+    cent = []
+    for k in sorted(levels):
+        pts = np.array(levels[k])
+        if len(pts) >= 8:
+            cent.append((k, float(np.median(pts[:, 0])), float(np.median(pts[:, 1])), pts))
+    n_steps_total = len(cent)
 
-    # --- 幅: 各高さ帯の水平の狭い側(壁込みなので過大寄り) ---
-    ws = []
-    for zc in np.arange(z.min() + 40, z.max() - 40, 30):
-        b = v[(z >= zc - 15) & (z < zc + 15)]
-        if len(b) < 80:
+    # --- 踏み面: 隣接段レベルの重心の水平移動 ---
+    treads = []
+    for a, b in zip(cent[:-1], cent[1:]):
+        if b[0] - a[0] != 1:
             continue
-        ws.append(min(np.percentile(b[:, 0], 85) - np.percentile(b[:, 0], 15),
-                      np.percentile(b[:, 1], 85) - np.percentile(b[:, 1], 15)))
-    width = float(np.median(ws)) if ws else 90.0
+        d = float(np.hypot(b[1] - a[1], b[2] - a[2]))
+        if 10 < d < 50:
+            treads.append(d)
+    tread = float(np.median(treads)) if treads else 26.0
+
+    # --- 幅: 各段の踏み面を、局所進行方向に直交する向きへ射影した広がり ---
+    widths = []
+    for k, (_, cx, cy, pts) in enumerate(cent):
+        if k + 1 < len(cent):
+            d = np.array([cent[k + 1][1] - cx, cent[k + 1][2] - cy])
+        elif k > 0:
+            d = np.array([cx - cent[k - 1][1], cy - cent[k - 1][2]])
+        else:
+            continue
+        nrm = np.linalg.norm(d)
+        if nrm < 1e-6:
+            continue
+        perp = np.array([-d[1], d[0]]) / nrm
+        proj = (pts[:, :2] - [cx, cy]) @ perp
+        w = float(np.percentile(proj, 95) - np.percentile(proj, 5))
+        if 40 < w < 160:
+            widths.append(w)
+    width = float(np.median(widths)) if widths else 90.0
 
     return {
         "rise": round(rise, 1), "tread": round(tread, 1), "width": round(width, 1),
@@ -66,8 +93,8 @@ def measure(path, assume_units=None):
         "confidence": {
             "rise": "安定(高さピーク間隔)",
             "n_steps/total_height": "安定",
-            "tread": "粗い(中心線勾配・過小寄り。要確認)",
-            "width": "粗い(壁の写り込みで過大寄り。要確認)",
+            "tread": "改善(段レベルの水平移動の中央値)",
+            "width": "改善(踏み面のみ・壁を除外)",
         },
     }
 
@@ -86,5 +113,5 @@ if __name__ == "__main__":
     print(f"  幅 width         = {r['width']} cm   [{r['confidence']['width']}]")
     print(f"  総高 total       = {r['total_height']} cm")
     print(f"  段数(全体)       = {r['n_steps_total']} (2フライトなら各 {r['n_steps_total']//2})")
-    print("注意: tread/width は単一スキャンでは粗い。virtual_demoで個別に"
-          "上書き(--tread/--width)して補正できる。")
+    print("注意: 踏み面・幅は水平面(踏み面)のみから計測して改善済みだが、"
+          "スキャンのノイズで数cmの誤差は残る。virtual_demoで--tread/--width上書き可。")
