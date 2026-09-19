@@ -22,6 +22,7 @@ import numpy as np
 import geometry3d as g3
 import phase2_lstair as L
 import scan_furniture as sf
+import measure_stairs as ms
 
 
 if __name__ == "__main__":
@@ -34,6 +35,9 @@ if __name__ == "__main__":
     ap.add_argument("--n1", type=int, help="下フライトの段数(--stepsの代わりに個別指定)")
     ap.add_argument("--n2", type=int, help="上フライトの段数")
     ap.add_argument("--ceil", type=float, help="天井高(最上段からの高さ, cm)")
+    ap.add_argument("--measure-stair", metavar="SCAN.obj",
+                    help="スキャンした階段から寸法(蹴上げ・踏み面・幅・段数)を計測して"
+                         "仮想階段に使う。個別の--width等を併記すればそちらで上書き")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
                    help="家具の寸法(長さ 幅 高さ, cm)")
@@ -44,10 +48,23 @@ if __name__ == "__main__":
     ap.add_argument("--gif", help="アニメGIFの出力先")
     args = ap.parse_args()
 
-    # --- 数値から仮想階段を組む ---
+    # --- 階段寸法: スキャン計測を土台に、明示指定があればそれで上書き ---
+    width, rise, tread = args.width, args.rise, args.tread
     n1 = args.n1 if args.n1 is not None else args.steps
     n2 = args.n2 if args.n2 is not None else args.steps
-    L.configure(width=args.width, rise=args.rise, tread=args.tread,
+    if args.measure_stair:
+        r = ms.measure(args.measure_stair)
+        print("スキャン計測: 蹴上げ%.0f / 踏み面%.0f(粗) / 幅%.0f(粗) / 段数%d(各%d)"
+              % (r["rise"], r["tread"], r["width"], r["n_steps_total"],
+                 r["n_steps_total"] // 2))
+        # 明示指定が無い項目だけ計測値で埋める
+        if width is None: width = r["width"]
+        if rise is None: rise = r["rise"]
+        if tread is None: tread = r["tread"]
+        half = max(1, r["n_steps_total"] // 2)
+        if n1 is None: n1 = half
+        if n2 is None: n2 = half
+    L.configure(width=width, rise=rise, tread=tread,
                 n_steps1=n1, n_steps2=n2, ceil_clear=args.ceil)
     print(f"仮想階段: 幅{L.STAIR_WIDTH:.0f}cm / 蹴上げ{L.RISE:.0f} x 踏み面{L.TREAD:.0f}cm / "
           f"({L.N_STEPS1}+{L.N_STEPS2})段 / 踊り場{L.STAIR_WIDTH:.0f}角 / "
