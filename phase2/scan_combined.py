@@ -15,11 +15,59 @@
 import argparse
 
 import numpy as np
+import trimesh
 
 import phase2_demo as p
 import scan_demo as sd
 import scan_furniture as sf
 import mesh_env as me
+
+
+def vertex_colors(mesh):
+    """メッシュの頂点色(N,3 uint8)を返す。テクスチャがあればそれをサンプル、
+    無ければNone。Scaniverseのスキャンはテクスチャjpgを持つ。"""
+    try:
+        col = np.asarray(mesh.visual.to_color().vertex_colors)
+        if col is not None and len(col) == len(mesh.vertices):
+            return col[:, :3].astype(int)
+    except Exception:
+        pass
+    return None
+
+
+def _rgb_strings(colors):
+    """(N,3)の色配列を plotly 用の 'rgb(r,g,b)' 文字列リストにする。"""
+    return ["rgb(%d,%d,%d)" % (r, g, b) for r, g, b in colors]
+
+
+def isolate_box_colored(mesh):
+    """箱を切り出して(点群, 頂点色)を返す。scan_furnitureの切り出しと同じ
+    「縦に厚みのあるセル=箱」判定を、頂点色も一緒に持って行う。"""
+    from scipy import ndimage
+    v = np.asarray(mesh.vertices)
+    col = vertex_colors(mesh)
+    xy_bin = 5.0
+    bx = np.arange(v[:, 0].min(), v[:, 0].max() + xy_bin, xy_bin)
+    by = np.arange(v[:, 1].min(), v[:, 1].max() + xy_bin, xy_bin)
+    ix = np.clip(np.digitize(v[:, 0], bx) - 1, 0, len(bx) - 2)
+    iy = np.clip(np.digitize(v[:, 1], by) - 1, 0, len(by) - 2)
+    zmax = np.full((len(bx) - 1, len(by) - 1), -1e9)
+    zmin = np.full((len(bx) - 1, len(by) - 1), 1e9)
+    np.maximum.at(zmax, (ix, iy), v[:, 2])
+    np.minimum.at(zmin, (ix, iy), v[:, 2])
+    zrange = np.where(zmax > -1e8, zmax - zmin, 0.0)
+    lbl, n = ndimage.label(zrange > 20.0)
+    if n == 0:
+        return v, col
+    sizes = np.bincount(lbl.ravel())
+    sizes[0] = 0
+    xi, yi = np.where(lbl == sizes.argmax())
+    x0, x1 = bx[xi.min()], bx[xi.max() + 1]
+    y0, y1 = by[yi.min()], by[yi.max() + 1]
+    m = 3.0
+    sel = ((v[:, 0] >= x0 - m) & (v[:, 0] <= x1 + m) &
+           (v[:, 1] >= y0 - m) & (v[:, 1] <= y1 + m))
+    return v[sel], (col[sel] if col is not None else None)
 
 
 def box_poses_along_stair(stair_mesh, box_dims, n=7):
@@ -43,33 +91,31 @@ def box_poses_along_stair(stair_mesh, box_dims, n=7):
     return poses
 
 
-def render_combined(stair_mesh, furn, poses, out_path):
-    """階段スキャン(灰)の中を家具スキャン(色付き)が動く3D HTML。"""
+def render_combined(stair_mesh, stair_col, box_local, box_col, poses, out_path):
+    """階段スキャン・家具スキャンを、それぞれの実際の色で描く3D HTML。
+    家具は姿勢を変えながら階段の中を動く。"""
     import plotly.graph_objects as go
 
     vs = np.asarray(stair_mesh.vertices)
-    if len(vs) > 8000:  # 描画が重くならないよう間引く
-        vs = vs[np.random.default_rng(0).choice(len(vs), 8000, replace=False)]
-    local = np.asarray(furn["local"])
-    czcol = local[:, 2]
-    env = me.MeshEnv(stair_mesh, require_watertight=False)
+    # 描画が重くならないよう階段点群を間引く(色も一緒に)
+    if len(vs) > 15000:
+        idx = np.random.default_rng(0).choice(len(vs), 15000, replace=False)
+        vs = vs[idx]
+        stair_col = stair_col[idx] if stair_col is not None else None
+    stair_color = _rgb_strings(stair_col) if stair_col is not None else "#b6bcc4"
+    box_color = _rgb_strings(box_col) if box_col is not None else "#c96a3a"
 
     def box_trace(pose):
         pos, quat = pose
-        wp = (local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
+        wp = (box_local @ p.g3.rotmat_from_quat(quat).T) + np.asarray(pos)
         return go.Scatter3d(
             x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
-            marker=dict(size=2.8, color=czcol, colorscale="YlOrRd", showscale=False),
-            showlegend=False, hoverinfo="skip")
-
-    # 各姿勢での家具→階段面の最小距離(符号なし=近さの目安)
-    dists = [env.shape_clearance(sf.furniture_world_points(local, ps, q))
-             for ps, q in poses]
+            marker=dict(size=3.0, color=box_color), showlegend=False, hoverinfo="skip")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter3d(  # 階段スキャン(灰)
+    fig.add_trace(go.Scatter3d(  # 階段スキャン(実際の色)
         x=vs[:, 0], y=vs[:, 1], z=vs[:, 2], mode="markers",
-        marker=dict(size=1.2, color="#b6bcc4"), showlegend=False, hoverinfo="skip"))
+        marker=dict(size=1.6, color=stair_color), showlegend=False, hoverinfo="skip"))
     fig.add_trace(box_trace(poses[0]))
     dyn = [len(fig.data) - 1]
     fig.frames = [go.Frame(data=[box_trace(ps)], traces=dyn, name=str(k))
@@ -80,7 +126,8 @@ def render_combined(stair_mesh, furn, poses, out_path):
                                        frame=dict(duration=0, redraw=True),
                                        transition=dict(duration=0))])
              for k in range(len(poses))]
-    d = furn["dims"]
+    # 箱の寸法(表示用): ローカル点の範囲から
+    d = box_local.max(axis=0) - box_local.min(axis=0)
     fig.update_layout(
         updatemenus=[dict(type="buttons", showactive=False, x=0.02, y=0.05,
                           buttons=[dict(label="Play", method="animate",
@@ -90,12 +137,13 @@ def render_combined(stair_mesh, furn, poses, out_path):
         sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04)],
         title=dict(text=f"Scanned cardboard ({d[0]:.0f}x{d[1]:.0f}x{d[2]:.0f}cm) "
                         "moving through the REAL scanned staircase -- drag to rotate", x=0.5),
-        scene=dict(aspectmode="data", camera=dict(eye=dict(x=-1.5, y=-1.5, z=1.0))),
+        scene=dict(aspectmode="data", camera=dict(eye=dict(x=-1.5, y=-1.5, z=1.0)),
+                   xaxis=dict(visible=False), yaxis=dict(visible=False),
+                   zaxis=dict(visible=False)),
+        paper_bgcolor="#0e1116", font=dict(color="#dddddd"),
         margin=dict(l=0, r=0, t=50, b=0))
     fig.write_html(out_path, include_plotlyjs=True, auto_play=False)
     print(f"saved combined 3D to {out_path}")
-    print("各位置での家具→階段面の最小距離(符号なし・近さの目安, cm):")
-    print("  " + "  ".join(f"{dd:.0f}" for dd in dists))
 
 
 if __name__ == "__main__":
@@ -107,8 +155,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     stair_mesh, _ = sd.load_scan_zup(args.stair)
-    pts = sf.isolate_object_points(args.box)
-    furn = sf.load_furniture(points=pts)
-    print(f"階段スキャン: {len(stair_mesh.vertices)}点 / 家具dims= {furn['dims'].round(0)} cm")
-    poses = box_poses_along_stair(stair_mesh, furn["dims"], n=args.n)
-    render_combined(stair_mesh, furn, poses, args.out)
+    stair_col = vertex_colors(stair_mesh)
+    box_mesh, _ = sd.load_scan_zup(args.box)
+    box_pts, box_pt_col = isolate_box_colored(box_mesh)
+
+    # 箱の向きを揃える(OBB)。座標変換に合わせて色も同じ順序を保つ
+    T, ext = trimesh.bounds.oriented_bounds(box_pts)
+    local = trimesh.transform_points(box_pts, T)
+    order = np.argsort(ext)[::-1]
+    local = local[:, order]
+    dims = np.asarray(ext)[order]
+    if len(local) > 800:  # 描画用に間引く(色も一緒に)
+        idx = np.random.default_rng(0).choice(len(local), 800, replace=False)
+        local = local[idx]
+        box_pt_col = box_pt_col[idx] if box_pt_col is not None else None
+
+    print(f"階段スキャン: {len(stair_mesh.vertices)}点 (色{'あり' if stair_col is not None else 'なし'}) "
+          f"/ 家具dims= {dims.round(0)} cm (色{'あり' if box_pt_col is not None else 'なし'})")
+    poses = box_poses_along_stair(stair_mesh, dims, n=args.n)
+    render_combined(stair_mesh, stair_col, local, box_pt_col, poses, args.out)
