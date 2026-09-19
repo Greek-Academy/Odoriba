@@ -110,6 +110,49 @@ def make_watertight(mesh, voxel_pitch=None):
     return filled, "voxel"
 
 
+def to_free_space_voxel(mesh, pitch=6.0, seal_iters=1, min_vol_m3=0.5):
+    """スキャン(壁・段の面)から「囲まれた空気の部分=自由空間」の水密
+    メッシュを取り出す。
+
+    手順: ボクセル化 -> 面を seal_iters 回だけ膨張(binary_dilation)して
+    小さな穴を塞ぐ -> 外周に空きの余白を足して「外側」を作る ->
+    binary_fill_holes で外側から届かない空きボクセル(=囲まれた空気)を
+    取り出す -> marching cubes で閉じた面にする。
+
+    膨張(dilation)であって膨張収縮(closing)ではない点が要注意: closingは
+    内部の大きな空洞まで潰してしまい、閉じた入力でも「空気ゼロ」と誤判定
+    する(検証で確認済み)。膨張は壁を厚くして小穴を塞ぐだけなので、空洞は
+    残る(そのぶん内部が seal_iters ボクセル分だけ小さめに出る)。
+
+    重要な前提チェック: スキャンが壁を十分に囲えていないと、内側の空気が
+    外側と繋がっていて「囲まれた空気」がほとんど無い(min_vol_m3未満)。その
+    場合は水密化できない(Noneと理由を返す)。より完全なスキャンか、手動での
+    蓋付け、または実測寸法での箱モデル(プランB)が必要というシグナル。
+    戻り値: (mesh or None, message)
+    """
+    from scipy import ndimage
+    vg = mesh.voxelized(pitch=pitch)
+    occ = np.asarray(vg.matrix, dtype=bool)
+    if seal_iters:
+        occ = ndimage.binary_dilation(occ, iterations=seal_iters)
+    # 外周に空きの余白を1層足して、確実に「外側の空き」を作る
+    occ = np.pad(occ, 1, mode="constant", constant_values=False)
+    # 外側から届かない空き = 囲まれた空気(enclosed pocket)
+    filled = ndimage.binary_fill_holes(occ)
+    interior = filled & ~occ
+    interior = interior[1:-1, 1:-1, 1:-1]  # 余白を戻す
+
+    vol_m3 = interior.sum() * pitch ** 3 / 1e6
+    if vol_m3 < min_vol_m3:
+        return None, (f"囲まれた空気がほとんど無い({vol_m3:.2f} m^3)=壁が閉じて"
+                      "いない部分スキャン。より完全なスキャンか手動蓋付けが必要")
+
+    free_vg = trimesh.voxel.VoxelGrid(interior, transform=vg.transform)
+    mc = free_vg.marching_cubes
+    trimesh.repair.fix_normals(mc)
+    return mc, f"囲まれた自由空間 {vol_m3:.1f} m^3 (pitch={pitch}cm)"
+
+
 def preprocess(path, assume_units=None, voxel_pitch=None, out_path=None):
     """load -> 単位正規化(cm) -> 水密化 -> 書き出し、までを一括で行う。
 
@@ -180,6 +223,19 @@ def _selftest():
     c = env.furniture_clearance(*L.START)
     print(f"(c) MeshEnvでSTART姿勢のクリアランス: {c:.1f}cm "
           f"-> {'OK(数値が出た)' if np.isfinite(c) else 'NG'}")
+
+    # (d) 囲まれた空間の抽出: 閉じた箱は空気が出る/一面開けた箱はNone
+    import trimesh as tm
+    room = tm.creation.box(extents=[300, 200, 240])
+    mroom, msg_r = to_free_space_voxel(room, pitch=8.0)
+    ok_closed = mroom is not None and mroom.is_watertight
+    op = room.copy()
+    xmax = room.vertices[:, 0].max()
+    op.update_faces(~np.all(room.vertices[:, 0][op.faces] > xmax - 1e-6, axis=1))
+    mopen, msg_o = to_free_space_voxel(op, pitch=8.0)
+    ok_open = mopen is None
+    print(f"(d) 囲まれた空間の抽出: 閉じた箱={'OK' if ok_closed else 'NG'}({msg_r}) / "
+          f"一面開け={'OK(None)' if ok_open else 'NG'}")
 
 
 if __name__ == "__main__":
