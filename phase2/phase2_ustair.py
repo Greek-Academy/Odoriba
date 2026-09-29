@@ -294,6 +294,94 @@ def best_effort_path(tree):
     return path
 
 
+# ---- ボトルネック掃引 ----
+
+def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True):
+    """中心線上の各弧長sで、粗い姿勢グリッドの中で達成できる最良の
+    クリアランス(cm)を返す: [(s, capacity_cm, best_pose), ...]。
+    L.sweep_capacityの折り返し版(姿勢グリッドの考え方は同じ)。
+
+    capacityが負の位置は「サンプルした姿勢のどれをとっても|capacity| cm
+    足りない」ことを意味する(姿勢グリッドの解像度の範囲で)。
+    """
+    max_pitch = L.MAX_TILT_DEG if with_human else 90.0
+    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    laterals = (-10.0, 0.0, 10.0)
+    z_extras = (0.0, 12.0, 30.0)
+    corner_yaws = tuple(np.arange(-90.0, 90.0 + 1e-9, 22.5))
+
+    # 端に近すぎるsはモデル化した廊下の端からはみ出すだけなので掃引しない
+    s_margin = L.FURN_L / 2 + L.p.CARRY_ARM + L.p.HUMAN_R + 10.0
+    results = []
+    for s in np.arange(s_margin, S_TOTAL - s_margin + 1e-9, ds):
+        x0, y0 = skeleton_xy(s)
+        in_corner = CORNER_S0 <= s <= CORNER_S1
+        yaws = corner_yaws if in_corner else (skeleton_heading(s),)
+        # 横方向 = 中心線に直交する向き(踊り場の横断中はy、フライト上はx)
+        along_x = S1 < s <= S2
+        best = -np.inf
+        best_pose = None
+        for yaw in yaws:
+            for pitch in pitches:
+                quat = L._pose(yaw, pitch).as_quat()
+                z_base = min_center_z(s, pitch)
+                for lat in laterals:
+                    x = x0 + (0.0 if along_x else lat)
+                    y = y0 + (lat if along_x else 0.0)
+                    for dz in z_extras:
+                        pos = np.array([x, y, z_base + dz])
+                        if with_human:
+                            c, _ = L.carriable_clearance_lstair(
+                                pos, quat, outer, obstacles, num_carriers, floor_fn=floor_z)
+                        else:
+                            c = L.furniture_clearance(pos, quat, outer, obstacles)
+                        if c > best:
+                            best = c
+                            best_pose = (pos.tolist(), quat.tolist())
+        results.append((float(s), float(best), best_pose))
+    return results
+
+
+def bottleneck_entry(sweep):
+    """掃引結果から最悪の位置を結果JSONの1項目(dict)にまとめる。"""
+    finite = [r for r in sweep if np.isfinite(r[1])]
+    s_min, c_min, pose_min = min(finite, key=lambda r: r[1])
+    # 余裕が負の連続区間(=詰まる場所)を数える。折り返しでは踊り場の
+    # 入口と出口の2つの90度旋回がそれぞれ別の詰まり所になり得る。
+    zones, run = [], None
+    for s, c, _ in sweep:
+        if c < 0:
+            run = [s, s, c] if run is None else [run[0], s, min(run[2], c)]
+        elif run is not None:
+            zones.append(run)
+            run = None
+    if run is not None:
+        zones.append(run)
+    return {"s": float(s_min), "capacity_cm": float(c_min),
+            "blocked_zones": [[float(a), float(b), float(c)] for a, b, c in zones],
+            "where": where_label(s_min),
+            "xy": list(map(float, skeleton_xy(s_min))), "pose": pose_min,
+            "profile": [[float(s), float(c)] for s, c, _ in sweep]}
+
+
+def result_summary_lines(result):
+    """図に載せる結論の1行サマリー(英語、L.result_summary_linesの折り返し版)。"""
+    lines = []
+    bn_box = result.get("bottleneck_furniture_only")
+    if bn_box:
+        lines.append(f"furniture alone: tightest at {bn_box['where']}, "
+                     f"{bn_box['capacity_cm']:.1f}cm margin at best pose")
+    bn = result.get("bottleneck")
+    if bn and bn["capacity_cm"] < 0:
+        nc = result["meta"]["carrier"]["num_carriers"]
+        tilt = result["meta"]["carrier"]["max_tilt_deg"]
+        nz = len(bn.get("blocked_zones", []))
+        lines.append(f"with {nc} carriers: {-bn['capacity_cm']:.1f}cm short at "
+                     f"{bn['where']} (best pose within {tilt:.0f} deg tilt"
+                     + (f", {nz} blocked spots" if nz > 1 else "") + ")")
+    return lines
+
+
 def result_meta(num_carriers, max_iter, seed):
     return {
         "stair": {"shape": "u-turn", "width": STAIR_WIDTH, "wall": WALL,
@@ -340,6 +428,8 @@ if __name__ == "__main__":
     parser.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
                         help="家具の寸法(長さ 幅 高さ, cm)。既定はL字と同じ200x50x65")
     parser.add_argument("--width", type=float, help="階段・踊り場奥行きの幅(cm)")
+    parser.add_argument("--skip-sweep", action="store_true",
+                        help="ボトルネック掃引を省く(動作確認用)")
     parser.add_argument("--out", default=os.path.join("results", "ustair_result.json"))
     args = parser.parse_args()
     num_carriers = args.carriers
@@ -363,6 +453,23 @@ if __name__ == "__main__":
             print(f"  BLOCKED (この試行回数では見つからず; 弧長{r['reached_s']:.0f}"
                   f"/{S_TOTAL:.0f}cmまで到達) [{r['time_s']:.0f}s]")
         result[key] = r
+
+    if not args.skip_sweep:
+        import time
+        for key, with_human, label in (("bottleneck_furniture_only", False, "家具単体"),
+                                       ("bottleneck", True, f"運搬者あり({num_carriers}人)")):
+            print(f"\nボトルネック掃引({label}、中心線に沿って)...")
+            t0 = time.time()
+            bn = bottleneck_entry(sweep_capacity(outer, obstacles, num_carriers,
+                                                 with_human=with_human))
+            print(f"  最も狭い位置: {bn['where']} (弧長{bn['s']:.0f}cm), "
+                  f"最良姿勢での余裕={bn['capacity_cm']:.1f}cm [{time.time() - t0:.0f}s]")
+            if bn["capacity_cm"] < 0:
+                print(f"  -> この位置では、どの姿勢でもあと{-bn['capacity_cm']:.1f}cm足りない"
+                      "(姿勢グリッドの範囲で)")
+                for a, b, c in bn["blocked_zones"]:
+                    print(f"     詰まる区間: 弧長{a:.0f}..{b:.0f}cm で最大{-c:.1f}cm不足")
+            result[key] = bn
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
