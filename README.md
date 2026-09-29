@@ -79,7 +79,12 @@ python phase2_ustair.py --max-iter 800 --skip-sweep     # 動作確認(十数秒
 python phase2_ustair.py --html ustair_3d.html            # RRT 2ケース + ボトルネック掃引 + 3D
 python phase2_ustair.py --json results/ustair_result.json --html ustair_3d.html  # 保存済みJSONから3Dだけ再生成
 python phase2_ustair.py --furniture 180 60 40 --width 80  # 家具・階段幅を変えて判定
+python phase2_ustair_viz.py                              # 説明用の1枚図(日本語、L字との比較つき) phase2_ustair.png
 ```
+
+`phase2_ustair_viz.py` の図は、初めて見る人向けに「①家具だけ(上から見た図) /
+②2人で運ぶ(詰まる姿勢を赤で) / ③入口からの道のりと余裕のグラフ」を1枚に
+まとめたもの。日本語フォント(Meiryo / BIZ UDPGothic 等)が必要。
 
 既定寸法(幅90・6+6段・家具200x50x65)の結果: 家具単体はPASS(最も狭い踊り場で
 余裕8.8cm)、運搬者2人はBLOCKED。踊り場の入口から出口まで(弧長490〜685cm)
