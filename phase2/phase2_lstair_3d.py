@@ -121,10 +121,12 @@ def carrier_states(pos, quat, outer, obstacles, num_carriers, floor_fn=None):
 
 
 def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
-                stair_label="L-shaped staircase", summary_lines=None):
+                stair_label="L-shaped staircase", summary_lines=None, camera_eye=None,
+                case_titles=None, title_text=None):
     """結果JSONを3Dビューア(HTML)に書き出す。
 
-    env/floor_fn/summary_linesを差し替えると、L字以外の環境(折り返し階段
+    env/floor_fn/summary_lines/camera_eye(初期視点)/case_titles(左右の見出し)/
+    title_text(全体の見出し)を差し替えると、L字以外の環境(折り返し階段
     など)でも同じビューアを使える。既定はL字。
     """
     outer, obstacles = L.build_lstairs() if env is None else env
@@ -142,7 +144,7 @@ def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
     carriers_car = [carrier_states(pos, q, outer, obstacles, num_carriers, floor_fn)
                     for pos, q in path_car]
 
-    titles = (
+    titles = case_titles or (
         f"furniture only: {'PASS' if box['found'] else 'BLOCKED'}",
         f"+ {num_carriers} carriers: "
         f"{'PASS' if car['found'] else 'BLOCKED (stops where search got stuck)'}",
@@ -196,7 +198,7 @@ def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
                                                          fromcurrent=True)])])],
         sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04,
                       currentvalue=dict(visible=False))],
-        title=dict(text=(
+        title=dict(text=title_text or (
             f"Odoriba Phase 2: {stair_label} 3D viewer "
             f"(stair width {meta['stair']['width']:.0f}cm, "
             f"furniture {meta['furniture']['L']:.0f}x{meta['furniture']['W']:.0f}"
@@ -205,10 +207,11 @@ def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
             # 位置指定のannotationはスライダーと重なりやすいのでtitleに載せる
             + ("<br><sup>" + "  |  ".join(summary) + "</sup>" if summary else "")),
             x=0.5),
-        margin=dict(l=0, r=0, t=70, b=0),
+        margin=dict(l=0, r=0, t=70 if title_text is None else 110, b=0),
     )
     same_scene = dict(aspectmode="data",
-                      camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
+                      camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9) if camera_eye is None
+                                  else camera_eye))
     fig.update_layout(scene=same_scene, scene2=same_scene)
 
     # 既定はplotly.jsをHTMLに埋め込む(約4MB増えるが、合宿など
