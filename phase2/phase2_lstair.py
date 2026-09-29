@@ -343,7 +343,7 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
 
 # ---- 可搬性オラクル(このモジュールでの精密化) ----
 
-def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
+def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None):
     """把持点と運搬者カプセル中心を返す。立てなければNone。
 
     phase2_demo.place_humans_3dとの違い:
@@ -355,8 +355,11 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     戻り値: [(capsule_center, reach_margin_cm), ...] または
     None(把持点の真下に歩ける床がない = そこに人は立てない)。
     reach_margin_cmは手の届く範囲までの余裕(負なら届かない)。
+    floor_fnは歩行面の高さ関数(既定はこのモジュールのL字のfloor_z)。
+    折り返し階段など別の環境でオラクルを使い回すときに差し替える。
     """
     num_carriers = p.NUM_CARRIERS if num_carriers is None else num_carriers
+    floor_fn = floor_z if floor_fn is None else floor_fn
     R = g3.rotmat_from_quat(quat)
     pos = np.asarray(pos)
     hl = FURN_L / 2
@@ -365,7 +368,7 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     signs = (-1.0,) if num_carriers == 1 else (1.0, -1.0)
     for sign in signs:
         grip = pos + R @ np.array([sign * (hl + p.CARRY_ARM), side_offset, 0.0])
-        fz = floor_z(grip[0], grip[1])
+        fz = floor_fn(grip[0], grip[1])
         if fz is None:
             return None
         hand = grip[2] - fz
@@ -375,7 +378,8 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     return out
 
 
-def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None):
+def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
+                               floor_fn=None):
     """運搬者込みで達成できる最良のクリアランス(cm)と、その横位置。
 
     phase2_demo.carriable_clearanceと同じ総当たりだが、
@@ -392,7 +396,7 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None):
     best = -np.inf
     best_offset = None
     for off in p.SIDE_OFFSETS:
-        placed = place_humans_lstair(pos, quat, off, num_carriers)
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
         if placed is None:
             continue
         terms = [bc]
@@ -410,24 +414,28 @@ def with_tilt_violation(quat):
     return tilt_deg(quat) > MAX_TILT_DEG
 
 
-def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None):
+def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
+                floor_fn=None):
     """このモジュール版のcollision_free(rrt_connectのvalidatorに渡す)。"""
     if with_human:
-        cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers)
+        cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
+                                           floor_fn)
         return cc >= 0
     return furniture_clearance(pos, quat, outer, obstacles) >= 0
 
 
-def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None):
+def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
+                                floor_fn=None):
     """描画専用: 最良の横位置での運搬者カプセル中心のリスト。
 
     詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
     描きたいので、成立しない場合はside_offset=0の位置で代用する。
     """
-    _, off = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers)
+    _, off = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
+                                        floor_fn)
     if off is None:
         off = 0.0
-    placed = place_humans_lstair(pos, quat, off, num_carriers)
+    placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
     if placed is None:
         # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
         R = g3.rotmat_from_quat(quat)

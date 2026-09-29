@@ -66,3 +66,22 @@ python phase2_lstair_3d.py     # 3Dビューア (phase2_lstair_3d.html; ブラ�
 
 画像・GIFはgit管理しない(`.gitignore`)。JSONがコミットされているので、
 クローン直後でも上の2コマンドだけで全図を再生成できる。
+
+### 折り返し(U字)階段
+
+日本の戸建てで最も多い、踊り場で180度折り返す階段。家具形状・可搬性オラクル・
+RRTはL字のものをそのまま使い、幾何(環境・歩行面・中心線・サンプラー)だけを
+`phase2_ustair.py` が持つ。結果は `results/ustair_result.json` に保存する:
+
+```bash
+cd phase2
+python phase2_ustair.py --max-iter 800 --skip-sweep     # 動作確認(十数秒)
+python phase2_ustair.py --html ustair_3d.html            # RRT 2ケース + ボトルネック掃引 + 3D
+python phase2_ustair.py --json results/ustair_result.json --html ustair_3d.html  # 保存済みJSONから3Dだけ再生成
+python phase2_ustair.py --furniture 180 60 40 --width 80  # 家具・階段幅を変えて判定
+```
+
+既定寸法(幅90・6+6段・家具200x50x65)の結果: 家具単体はPASS(最も狭い踊り場で
+余裕8.8cm)、運搬者2人はBLOCKED。踊り場の入口から出口まで(弧長490〜685cm)
+一度も余裕がプラスに戻らず、最大29cm不足。L字(同じ家具で29cm不足)は踊り場の
+出口で余裕が戻るのに対し、折り返しは踊り場全体が詰まり所になる。
