@@ -111,16 +111,24 @@ def furniture_state(pos, quat):
     return np.asarray(pos), g3.rotmat_from_quat(quat), half
 
 
-def carrier_states(pos, quat, outer, obstacles, num_carriers):
+def carrier_states(pos, quat, outer, obstacles, num_carriers, floor_fn=None):
     """このフレームでの運搬者円柱(中心, 半径, 半高)のリスト。"""
     out = []
-    for c in L.best_human_positions_lstair(pos, quat, num_carriers, outer, obstacles):
+    for c in L.best_human_positions_lstair(pos, quat, num_carriers, outer, obstacles,
+                                           floor_fn):
         out.append((np.asarray(c), L.p.HUMAN_R, L._CARRIER_HALF_H))
     return out
 
 
-def render_html(result, out_path, use_cdn=False):
-    outer, obstacles = L.build_lstairs()
+def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
+                stair_label="L-shaped staircase", summary_lines=None):
+    """結果JSONを3Dビューア(HTML)に書き出す。
+
+    env/floor_fn/summary_linesを差し替えると、L字以外の環境(折り返し階段
+    など)でも同じビューアを使える。既定はL字。
+    """
+    outer, obstacles = L.build_lstairs() if env is None else env
+    summary = (L.result_summary_lines if summary_lines is None else summary_lines)(result)
     meta = result["meta"]
     num_carriers = meta["carrier"]["num_carriers"]
 
@@ -131,7 +139,7 @@ def render_html(result, out_path, use_cdn=False):
     path_car = resample(parse_path(car["path"] if car["found"]
                                    else car["best_effort_path"]), N_FRAMES)
     # 運搬者の立ち位置はフレームごとにオラクルで求めて先に計算しておく
-    carriers_car = [carrier_states(pos, q, outer, obstacles, num_carriers)
+    carriers_car = [carrier_states(pos, q, outer, obstacles, num_carriers, floor_fn)
                     for pos, q in path_car]
 
     titles = (
@@ -189,14 +197,13 @@ def render_html(result, out_path, use_cdn=False):
         sliders=[dict(steps=steps, x=0.12, len=0.85, y=0.04,
                       currentvalue=dict(visible=False))],
         title=dict(text=(
-            "Odoriba Phase 2: L-shaped staircase 3D viewer "
+            f"Odoriba Phase 2: {stair_label} 3D viewer "
             f"(stair width {meta['stair']['width']:.0f}cm, "
             f"furniture {meta['furniture']['L']:.0f}x{meta['furniture']['W']:.0f}"
             f"x{meta['furniture']['H']:.0f}cm) -- drag to rotate"
             # 結論の数字(PNG/GIFと同じ出典=結果JSON)をタイトル2行目に。
             # 位置指定のannotationはスライダーと重なりやすいのでtitleに載せる
-            + ("<br><sup>" + "  |  ".join(L.result_summary_lines(result)) + "</sup>"
-               if L.result_summary_lines(result) else "")),
+            + ("<br><sup>" + "  |  ".join(summary) + "</sup>" if summary else "")),
             x=0.5),
         margin=dict(l=0, r=0, t=70, b=0),
     )
