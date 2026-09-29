@@ -449,9 +449,25 @@ if __name__ == "__main__":
 
     def write_html(result):
         import phase2_lstair_3d as viz3d
-        viz3d.render_html(result, args.html, use_cdn=args.cdn, env=(outer, obstacles),
-                          floor_fn=floor_z, stair_label="U-turn staircase",
-                          summary_lines=result_summary_lines)
+        # 初めて見る人向けに見出しは日本語。視点は斜め上から見下ろす
+        # (横からだと上側フライトの下の実体が手前を塞ぎ、踊り場が見えない)
+        box, car = result["box_only"], result["with_carriers"]
+        nc = result["meta"]["carrier"]["num_carriers"]
+        fu = result["meta"]["furniture"]
+        lines = [f"家具 {fu['L']:.0f}×{fu['W']:.0f}×{fu['H']:.0f}cm / 階段幅 "
+                 f"{result['meta']['stair']['width']:.0f}cm  —  ドラッグで回転、Playで再生"]
+        bn = result.get("bottleneck")
+        if bn and bn["capacity_cm"] < 0:
+            lines.append(f"{nc}人で運ぶと、踊り場でどう向けてもあと{-bn['capacity_cm']:.0f}cm足りない")
+        viz3d.render_html(
+            result, args.html, use_cdn=args.cdn, env=(outer, obstacles),
+            floor_fn=floor_z, summary_lines=result_summary_lines,
+            camera_eye=dict(x=-1.0, y=-0.9, z=1.9),
+            case_titles=(f"家具だけ: {'通る' if box['found'] else '通らない'}",
+                         f"{nc}人で運ぶ: " + ("通る" if car['found'] else
+                                           "通らない(赤=探索が進めた最後の姿勢)")),
+            title_text=("折り返し階段: 家具だけなら通るのに、人が運ぶと踊り場で回せない"
+                        "<br><sup>" + "<br>".join(lines) + "</sup>"))
 
     if args.json:
         # 探索はせず、保存済みの経路を再生するだけ(寸法は結果JSONのものを使う)
