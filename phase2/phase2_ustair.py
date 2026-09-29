@@ -428,6 +428,11 @@ if __name__ == "__main__":
     parser.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
                         help="家具の寸法(長さ 幅 高さ, cm)。既定はL字と同じ200x50x65")
     parser.add_argument("--width", type=float, help="階段・踊り場奥行きの幅(cm)")
+    parser.add_argument("--html", help="3Dビューア(HTML)の出力先。--jsonと併用すると"
+                                       "探索せず保存済みの結果から書き出すだけにする")
+    parser.add_argument("--json", help="保存済みの結果JSON(--htmlの再生成用)")
+    parser.add_argument("--cdn", action="store_true",
+                        help="plotly.jsを埋め込まずCDNから読む(ファイルが小さくなる)")
     parser.add_argument("--skip-sweep", action="store_true",
                         help="ボトルネック掃引を省く(動作確認用)")
     parser.add_argument("--out", default=os.path.join("results", "ustair_result.json"))
@@ -441,6 +446,26 @@ if __name__ == "__main__":
     print(f"折り返し階段: 幅{STAIR_WIDTH:.0f}cm, 蹴上げ{RISE:.0f}cm x ({N_STEPS1}+{N_STEPS2})段, "
           f"踊り場{X_R1:.0f}x{STAIR_WIDTH:.0f}cm / "
           f"家具: {L.FURN_L:.0f}x{L.FURN_W:.0f}x{L.FURN_H:.0f}cm / 運搬者: {num_carriers}人")
+
+    def write_html(result):
+        import phase2_lstair_3d as viz3d
+        viz3d.render_html(result, args.html, use_cdn=args.cdn, env=(outer, obstacles),
+                          floor_fn=floor_z, stair_label="U-turn staircase",
+                          summary_lines=result_summary_lines)
+
+    if args.json:
+        # 探索はせず、保存済みの経路を再生するだけ(寸法は結果JSONのものを使う)
+        with open(args.json) as f:
+            result = json.load(f)
+        st, fu = result["meta"]["stair"], result["meta"]["furniture"]
+        L.FURN_L, L.FURN_W, L.FURN_H = fu["L"], fu["W"], fu["H"]
+        configure(width=st["width"], rise=st["rise"], tread=st["tread"],
+                  n_steps1=st["n_steps1"], n_steps2=st["n_steps2"], wall=st["wall"],
+                  base_d=st["base_d"], top_d=st["top_d"], ceil_clear=st["ceil_clear"])
+        outer, obstacles = build_ustairs()
+        if args.html:
+            write_html(result)
+        raise SystemExit(0)
 
     result = {"meta": result_meta(num_carriers, args.max_iter, args.seed)}
     for key, with_human, label in (("box_only", False, "家具単体"),
@@ -475,3 +500,5 @@ if __name__ == "__main__":
     with open(args.out, "w") as f:
         json.dump(result, f, indent=1)
     print(f"\nsaved result to {args.out}")
+    if args.html:
+        write_html(result)
