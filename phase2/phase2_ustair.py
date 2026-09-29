@@ -231,3 +231,140 @@ def make_start_goal():
 
 
 make_start_goal()
+
+
+# ---- 骨格誘導サンプラー / validator ----
+
+def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
+    """折り返し階段用の骨格誘導サンプラー(L.make_samplerと同じ構造)。
+
+    - 位置: 中心線上の弧長sを一様に引き、横方向・高さにノイズ
+    - 姿勢: フライト上では長軸を進行方向に向けて勾配ピッチ。
+      踊り場ゾーンではヨーを-105..105度で一様(フライト1の90度から
+      フライト2の-90度まで、0度を経由して180度回しきれるように)。
+      家具単体は垂直近くまで「立てて回す」解を重点的に撒く
+    - 確率(1 - p_guided)では完全ランダム(誘導が思いつかない解への保険)
+    """
+    max_pitch = L.MAX_TILT_DEG if with_human else 92.0
+
+    def sampler(rng):
+        if rng.random() >= p_guided:
+            pos = rng.uniform([0, TOP_Y0, 0], [X_R1, LAND_Y1, TOP_Z + CEIL_CLEAR])
+            return pos, L.g3.random_quaternion(rng)
+        s = rng.uniform(0.0, S_TOTAL)
+        if CORNER_S0 <= s <= CORNER_S1:
+            yaw = rng.uniform(-105.0, 105.0)
+            if with_human:
+                pitch = rng.uniform(0.0, max_pitch)
+            else:
+                pitch = rng.uniform(55.0, 92.0) if rng.random() < 0.6 \
+                    else rng.uniform(0.0, 55.0)
+        else:
+            base_pitch = STAIR_ANGLE_DEG if on_flight(s) else 0.0
+            yaw = skeleton_heading(s) + rng.normal(0.0, rot_noise_deg)
+            pitch = base_pitch + rng.normal(0.0, rot_noise_deg)
+        roll = rng.normal(0.0, rot_noise_deg * 0.5)
+        quat = L._pose(yaw, pitch, roll).as_quat()
+
+        x, y = skeleton_xy(s)
+        z = min_center_z(s, pitch) + abs(rng.normal(0.0, 12.0))
+        pos = np.array([x, y, z]) + rng.normal(0.0, pos_noise, size=3) * np.array([1, 1, 0.3])
+        return pos, quat
+
+    return sampler
+
+
+def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None):
+    """rrt_connectのvalidator。L字のオラクルに折り返しの歩行面を渡すだけ。"""
+    return L.state_valid(pos, quat, with_human, outer, obstacles, num_carriers,
+                         floor_fn=floor_z)
+
+
+def best_effort_path(tree):
+    """RRTが失敗したとき、start側ツリーで中心線上を一番先まで進めたノード
+    までの経路(L.best_effort_pathの折り返し版)。"""
+    progress = [skeleton_s(n.pos[0], n.pos[1]) for n in tree]
+    i = int(np.argmax(progress))
+    path = []
+    while i is not None:
+        n = tree[i]
+        path.append((n.pos, n.quat))
+        i = n.parent
+    path.reverse()
+    return path
+
+
+def result_meta(num_carriers, max_iter, seed):
+    return {
+        "stair": {"shape": "u-turn", "width": STAIR_WIDTH, "wall": WALL,
+                  "rise": RISE, "tread": TREAD,
+                  "n_steps1": N_STEPS1, "n_steps2": N_STEPS2,
+                  "landing": [X_R1, STAIR_WIDTH], "landing_z": LAND_Z,
+                  "base_d": BASE_D, "top_d": TOP_D, "ceil_clear": CEIL_CLEAR},
+        "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
+        "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM,
+                    "leg_clear": L.LEG_CLEAR,
+                    "reach": [L.REACH_MIN, L.REACH_MAX], "max_tilt_deg": L.MAX_TILT_DEG,
+                    "num_carriers": num_carriers},
+        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": L.W_ROT},
+    }
+
+
+def plan(with_human, outer, obstacles, num_carriers, max_iter, seed):
+    """1ケース分のRRT-Connectを回し、結果JSONの1項目(dict)を返す。"""
+    import time
+    t0 = time.time()
+    path, tree = L.p.rrt_connect(
+        START, GOAL, with_human=with_human, outer=outer, obstacles=obstacles,
+        num_carriers=num_carriers, max_iter=max_iter, seed=seed, w_rot=L.W_ROT,
+        sampler=make_sampler(with_human), validator=state_valid, return_trees=True)
+    dt = time.time() - t0
+    if path is not None:
+        return {"found": True, "path": L._path_to_json(path), "time_s": dt}
+    be = best_effort_path(tree)
+    return {"found": False, "time_s": dt,
+            "reached_s": skeleton_s(be[-1][0][0], be[-1][0][1]),
+            "best_effort_path": L._path_to_json(be)}
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    import os
+
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--carriers", type=int, choices=(1, 2), default=L.p.NUM_CARRIERS)
+    parser.add_argument("--max-iter", type=int, default=4000)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
+                        help="家具の寸法(長さ 幅 高さ, cm)。既定はL字と同じ200x50x65")
+    parser.add_argument("--width", type=float, help="階段・踊り場奥行きの幅(cm)")
+    parser.add_argument("--out", default=os.path.join("results", "ustair_result.json"))
+    args = parser.parse_args()
+    num_carriers = args.carriers
+
+    if args.furniture:
+        L.FURN_L, L.FURN_W, L.FURN_H = sorted(args.furniture, reverse=True)
+    configure(width=args.width)
+    outer, obstacles = build_ustairs()
+    print(f"折り返し階段: 幅{STAIR_WIDTH:.0f}cm, 蹴上げ{RISE:.0f}cm x ({N_STEPS1}+{N_STEPS2})段, "
+          f"踊り場{X_R1:.0f}x{STAIR_WIDTH:.0f}cm / "
+          f"家具: {L.FURN_L:.0f}x{L.FURN_W:.0f}x{L.FURN_H:.0f}cm / 運搬者: {num_carriers}人")
+
+    result = {"meta": result_meta(num_carriers, args.max_iter, args.seed)}
+    for key, with_human, label in (("box_only", False, "家具単体"),
+                                   ("with_carriers", True, f"運搬者あり({num_carriers}人)")):
+        print(f"\n{label}の経路を探索中...")
+        r = plan(with_human, outer, obstacles, num_carriers, args.max_iter, args.seed)
+        if r["found"]:
+            print(f"  PASS [{r['time_s']:.0f}s]")
+        else:
+            print(f"  BLOCKED (この試行回数では見つからず; 弧長{r['reached_s']:.0f}"
+                  f"/{S_TOTAL:.0f}cmまで到達) [{r['time_s']:.0f}s]")
+        result[key] = r
+
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w") as f:
+        json.dump(result, f, indent=1)
+    print(f"\nsaved result to {args.out}")
