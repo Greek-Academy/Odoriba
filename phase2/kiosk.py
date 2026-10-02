@@ -23,11 +23,17 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
+import plotly
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 import phase2_lstair as L
+import phase2_lstair_3d as V
 
 PORT = 8000
 DEMO_DIR = Path(__file__).resolve().parent.parent / "demo"
+# 会場がオフラインでも3Dが出るよう、plotly同梱のJSを配信する
+PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
 
 # 選ぶだけで試せるプリセット(起動時に裏で計算しておき、押したら即答する)
 STAIR_PRESETS = {
@@ -49,16 +55,45 @@ _cache = {}
 
 
 def _bottleneck(outer, obstacles, with_human):
-    """掃引して(場所, 最小クリアランスcm)を返す。姿勢が1つも取れなければ(None, -inf)。"""
+    """掃引して(場所, 最小クリアランスcm, その位置での最良姿勢)を返す。
+    姿勢が1つも取れなければ(None, -inf, None)。"""
     sweep = L.sweep_capacity(outer, obstacles, num_carriers=2 if with_human else None,
                              with_human=with_human)
-    finite = [(s, c) for s, c, _ in sweep if np.isfinite(c)]
+    finite = [(s, c, pose) for s, c, pose in sweep if np.isfinite(c)]
     if not finite:
-        return None, -np.inf
-    s_min, c_min = min(finite, key=lambda r: r[1])
+        return None, -np.inf, None
+    s_min, c_min, pose = min(finite, key=lambda r: r[1])
     s_land0, s_land1 = L.FL1_Y1, L.S_CORNER + (L.FL2_X0 - L.CENTER)
     where = "踊り場" if s_land0 <= s_min <= s_land1 else "階段の途中"
-    return where, c_min
+    return where, c_min, pose
+
+
+def _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h):
+    """一番狭い場所での家具(左)と、2人で運ぶ様子(右)の3D図をJSONで返す。
+    足りない側は家具と運搬者を赤くする。"""
+    fig = make_subplots(rows=1, cols=2, specs=[[{"type": "scene"}] * 2],
+                        subplot_titles=("家具だけ(一番狭い場所)",
+                                        "2人で持って運ぶ(一番狭い場所)"),
+                        horizontal_spacing=0.02)
+    for col in (1, 2):
+        for center, rot, half in obstacles:
+            fig.add_trace(V.box_mesh(center, rot, half, "#c9c9c9"), row=1, col=col)
+        fig.add_trace(V.outer_wireframe(outer), row=1, col=col)
+    for col, pose, c in ((1, pose_b, c_b), (2, pose_h, c_h)):
+        if pose is None:
+            continue
+        pos, quat = np.array(pose[0]), np.array(pose[1])
+        ng = c < 0
+        fig.add_trace(V.box_mesh(*V.furniture_state(pos, quat),
+                                 "#c0392b" if ng else "#2c6fbb"), row=1, col=col)
+        if col == 2:
+            for cc, r, hh in V.carrier_states(pos, quat, outer, obstacles, 2):
+                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#e74c3c" if ng else "#e07b39",
+                                              opacity=0.85), row=1, col=col)
+    scene = dict(aspectmode="data", camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
+    fig.update_layout(scene=scene, scene2=scene, height=560,
+                      margin=dict(l=0, r=0, t=40, b=0))
+    return fig.to_json()
 
 
 def judge(width, rise, tread, steps, fl, fw, fh):
@@ -73,10 +108,11 @@ def judge(width, rise, tread, steps, fl, fw, fh):
         a, b = sorted([fl, fw], reverse=True)
         L.FURN_L, L.FURN_W, L.FURN_H = float(a), float(b), float(fh)
         outer, obstacles = L.build_lstairs()
-        where_b, c_b = _bottleneck(outer, obstacles, with_human=False)
-        where_h, c_h = _bottleneck(outer, obstacles, with_human=True)
+        where_b, c_b, pose_b = _bottleneck(outer, obstacles, with_human=False)
+        where_h, c_h, pose_h = _bottleneck(outer, obstacles, with_human=True)
+        fig = _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h)
         res = dict(where_b=where_b, c_b=float(c_b), where_h=where_h, c_h=float(c_h),
-                   sec=time.time() - t0)
+                   fig=fig, sec=time.time() - t0)
         _cache[key] = res
         return res
 
@@ -134,7 +170,7 @@ input[type=number]{{width:5em;font-size:1.1em}}
 <label>1段の高さ <input type="number" name="rise" value="{rise}" min="12" max="25"> cm</label>
 <label>1段の奥行き <input type="number" name="tread" value="{tread}" min="18" max="35"> cm</label>
 <label>段数(踊り場まで) <input type="number" name="steps" value="{steps}" min="3" max="15"> 段</label>
-<fieldset class="presets" style="margin-top:12px"><legend>② 家具をえらぶ</legend>
+<fieldset class="presets" style="margin-top:12px"><legend>② 家具をえらぶ（押すとすぐ判定します）</legend>
 {furn_buttons}</fieldset>
 <label>長さ <input type="number" name="fl" value="{fl}" min="20" max="300"> cm</label>
 <label>幅 <input type="number" name="fw" value="{fw}" min="20" max="200"> cm</label>
@@ -143,12 +179,21 @@ input[type=number]{{width:5em;font-size:1.1em}}
 <p id="wait">計算中です… 新しい寸法だと20〜40秒ほどかかります</p>
 </form>
 {result}
+<script src="/plotly.min.js"></script>
+<script>
+const FIG = {fig};
+if (FIG) Plotly.newPlot('viz', FIG.data, FIG.layout, {{responsive: true}});
+</script>
 <h2>くわしく見る</h2>
 <div class="links">{links}</div>
 <p class="note">運ぶ人は2人、体を円柱(半径20cm・身長170cm)で近似。家具を傾けられるのは55度まで、
 持つ高さは10〜190cmと仮定しています。結果は研究中の試作品によるものです。</p>
 <script>
 function setv(o){{for(const k in o)document.querySelector('[name='+k+']').value=o[k];}}
+// 家具ボタンは選んだらそのまま計算する
+function pick(o){{setv(o);document.getElementById('wait').style.display='block';
+  const f=document.querySelector('form');const g=document.createElement('input');
+  g.type='hidden';g.name='go';g.value='1';f.appendChild(g);f.submit();}}
 </script>
 </body></html>"""
 
@@ -171,6 +216,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == "/plotly.min.js":
+            data = PLOTLY_JS.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if u.path.startswith("/demo/"):
             self.path = u.path[len("/demo"):]
             return super().do_GET()
@@ -181,6 +235,7 @@ class Handler(SimpleHTTPRequestHandler):
         st = dict(STAIR_PRESETS["ふつうの家の階段(幅80cm)"])
         fl, fw, fh = FURN_PRESETS["タンス 200×50×65"]
         result = ""
+        fig = "null"
         try:
             st = {k: float(q.get(k, st[k])) for k in st}
             st["steps"] = int(st["steps"])
@@ -195,6 +250,9 @@ class Handler(SimpleHTTPRequestHandler):
                 result = '<h2>結果</h2><div class="cards">' + \
                     _verdict_html(r["c_b"], r["where_b"], "家具だけなら") + \
                     _verdict_html(r["c_h"], r["where_h"], "2人で持って運ぶと") + "</div>"
+                result += ('<p class="note">下の3Dは、一番狭い場所で家具を一番うまく向けた姿勢です。'
+                           'マウスでドラッグすると回せます（赤＝足りない）。</p><div id="viz"></div>')
+                fig = r["fig"].replace("</", "<\\/")
                 if r["c_b"] >= 0 > r["c_h"]:
                     result += ('<p class="msg">家具だけなら通るのに、人が持つと通らない！<br>'
                                '運ぶ人の体も通路をふさぐので、踊り場で家具を回すスペースが足りなくなります。'
@@ -211,7 +269,7 @@ class Handler(SimpleHTTPRequestHandler):
         links = "".join(f'<a href="/demo/{f}" target="_blank">{t}</a>'
                         for f, t in LINKS if (DEMO_DIR / f).exists())
         body = PAGE.format(stair_buttons=stair_buttons, furn_buttons=furn_buttons,
-                           result=result, links=links, fl=f"{fl:g}", fw=f"{fw:g}",
+                           result=result, fig=fig, links=links, fl=f"{fl:g}", fw=f"{fw:g}",
                            fh=f"{fh:g}", **{k: f"{v:g}" for k, v in st.items()})
         data = body.encode("utf-8")
         self.send_response(200)
