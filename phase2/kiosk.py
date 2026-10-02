@@ -85,10 +85,10 @@ def _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h):
         pos, quat = np.array(pose[0]), np.array(pose[1])
         ng = c < 0
         fig.add_trace(V.box_mesh(*V.furniture_state(pos, quat),
-                                 "#7a2e2e" if ng else "#2f4a5e"), row=1, col=col)
+                                 "#c0392b" if ng else "#2f4a5e"), row=1, col=col)
         if col == 2:
             for cc, r, hh in V.carrier_states(pos, quat, outer, obstacles, 2):
-                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#a0524a" if ng else "#b08d57",
+                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#d9604f" if ng else "#b08d57",
                                               opacity=0.85), row=1, col=col)
     scene = dict(aspectmode="data", camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
     fig.update_layout(scene=scene, scene2=scene, height=560,
@@ -260,7 +260,10 @@ class Handler(SimpleHTTPRequestHandler):
                     _verdict_html(r["c_b"], r["where_b"], "家具だけなら") + \
                     _verdict_html(r["c_h"], r["where_h"], "2人で持って運ぶと") + "</div>"
                 result += ('<p class="note">下の3Dは、一番狭い場所で家具を一番うまく向けた姿勢です。'
-                           'マウスでドラッグすると回せます（赤＝足りない）。</p><div id="viz"></div>')
+                           'マウスでドラッグすると回せます。</p>'
+                           '<p class="note"><span style="color:#c0392b">■</span> 赤＝足りない　'
+                           '<span style="color:#2f4a5e">■</span> 紺＝通る　'
+                           '<span style="color:#b08d57">●</span> 金色の柱＝運ぶ人</p><div id="viz"></div>')
                 fig = r["fig"].replace("</", "<\\/")
                 if r["c_b"] >= 0 > r["c_h"]:
                     result += ('<p class="msg">家具だけなら通るのに、人が持つと通らない！<br>'
