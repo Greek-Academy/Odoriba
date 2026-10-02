@@ -77,7 +77,7 @@ def _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h):
                         horizontal_spacing=0.02)
     for col in (1, 2):
         for center, rot, half in obstacles:
-            fig.add_trace(V.box_mesh(center, rot, half, "#c9c9c9"), row=1, col=col)
+            fig.add_trace(V.box_mesh(center, rot, half, "#cfc8ba"), row=1, col=col)
         fig.add_trace(V.outer_wireframe(outer), row=1, col=col)
     for col, pose, c in ((1, pose_b, c_b), (2, pose_h, c_h)):
         if pose is None:
@@ -85,13 +85,14 @@ def _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h):
         pos, quat = np.array(pose[0]), np.array(pose[1])
         ng = c < 0
         fig.add_trace(V.box_mesh(*V.furniture_state(pos, quat),
-                                 "#c0392b" if ng else "#2c6fbb"), row=1, col=col)
+                                 "#7a2e2e" if ng else "#2f4a5e"), row=1, col=col)
         if col == 2:
             for cc, r, hh in V.carrier_states(pos, quat, outer, obstacles, 2):
-                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#e74c3c" if ng else "#e07b39",
+                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#a0524a" if ng else "#b08d57",
                                               opacity=0.85), row=1, col=col)
     scene = dict(aspectmode="data", camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
     fig.update_layout(scene=scene, scene2=scene, height=560,
+                      paper_bgcolor="#fbfaf6", font=dict(color="#3d3b37"),
                       margin=dict(l=0, r=0, t=40, b=0))
     return fig.to_json()
 
@@ -142,22 +143,30 @@ def _verdict_html(c, where, label):
 PAGE = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
 <title>Odoriba — その家具、運び込めますか？</title>
 <style>
-body{{font-family:"Yu Gothic UI","Meiryo",sans-serif;max-width:1000px;margin:20px auto;padding:0 16px;background:#fafaf7;color:#222}}
-h1{{font-size:2.2em;margin:.2em 0}} h2{{border-left:6px solid #2a7;padding-left:8px}}
-.lead{{font-size:1.2em}}
-form{{background:#fff;padding:16px;border-radius:10px;box-shadow:0 1px 4px #0002}}
-fieldset{{border:none;margin:0 0 10px;padding:0}} legend{{font-weight:bold;font-size:1.1em}}
-label{{display:inline-block;margin:4px 12px 4px 0;font-size:1.05em}}
-input[type=number]{{width:5em;font-size:1.1em}}
-.presets button{{font-size:1em;margin:3px;padding:6px 10px;border-radius:6px;border:1px solid #999;background:#f3f3f3;cursor:pointer}}
-.go{{font-size:1.4em;padding:10px 40px;background:#2a7;color:#fff;border:none;border-radius:8px;cursor:pointer}}
-.cards{{display:flex;gap:16px;margin-top:16px}} .card{{flex:1;padding:16px;border-radius:10px}}
-.ok{{background:#e3f6e8;border:2px solid #2a7}} .ng{{background:#fde8e8;border:2px solid #d33}}
-.big{{font-size:2.2em;font-weight:bold;margin:.2em 0}}
-.msg{{font-size:1.15em;background:#fff8d8;padding:12px;border-radius:8px;margin-top:12px}}
-#wait{{display:none;font-size:1.3em;color:#a60;margin-top:10px}}
-.links a{{display:inline-block;margin:4px 8px 4px 0;font-size:1.05em}}
-.note{{color:#666;font-size:.9em}}
+body{{font-family:"Yu Gothic UI","Meiryo",sans-serif;max-width:1000px;margin:28px auto;padding:0 20px;background:#f4f1ea;color:#2b2a28;letter-spacing:.02em}}
+h1,h2,h3{{font-family:"Yu Mincho","YuMincho","Hiragino Mincho ProN",serif;font-weight:600}}
+h1{{font-size:2.4em;margin:.2em 0;color:#1f2a24;letter-spacing:.08em}}
+h2{{border-left:3px solid #8a7350;padding-left:10px;color:#1f2a24;margin-top:1.6em}}
+.lead{{font-size:1.15em;line-height:1.8;color:#3d3b37}}
+form{{background:#fbfaf6;padding:20px 22px;border:1px solid #d9d2c3;border-radius:4px}}
+fieldset{{border:none;margin:0 0 10px;padding:0}} legend{{font-weight:bold;font-size:1.05em;color:#1f2a24}}
+label{{display:inline-block;margin:4px 14px 4px 0;font-size:1.02em;color:#3d3b37}}
+input[type=number]{{width:5em;font-size:1.05em;padding:3px 6px;border:1px solid #bfb6a3;border-radius:3px;background:#fff}}
+.presets button{{font-size:.98em;margin:3px;padding:7px 12px;border-radius:3px;border:1px solid #8a7350;background:transparent;color:#4a3f2e;cursor:pointer;transition:.15s}}
+.presets button:hover{{background:#8a7350;color:#fbfaf6}}
+.go{{font-size:1.25em;padding:10px 44px;background:#1f3a2e;color:#f4f1ea;border:none;border-radius:3px;cursor:pointer;letter-spacing:.2em}}
+.go:hover{{background:#2d5242}}
+.cards{{display:flex;gap:18px;margin-top:16px}} .card{{flex:1;padding:16px 20px;border-radius:4px;background:#fbfaf6}}
+.card h3{{margin:.2em 0;color:#3d3b37;font-size:1.05em}}
+.ok{{border:1px solid #1f3a2e;border-top:5px solid #1f3a2e}} .ok .big{{color:#1f3a2e}}
+.ng{{border:1px solid #7a2e2e;border-top:5px solid #7a2e2e}} .ng .big{{color:#7a2e2e}}
+.big{{font-family:"Yu Mincho","YuMincho",serif;font-size:2.2em;font-weight:bold;margin:.15em 0}}
+.msg{{font-size:1.08em;line-height:1.8;background:#ece6d8;border-left:3px solid #8a7350;padding:12px 16px;margin-top:14px}}
+#wait{{display:none;font-size:1.15em;color:#8a7350;margin-top:10px}}
+.links a{{display:inline-block;margin:4px 16px 4px 0;font-size:1.02em;color:#1f3a2e;text-decoration:none;border-bottom:1px solid #8a7350}}
+.links a:hover{{color:#8a7350}}
+.note{{color:#7a7468;font-size:.9em;line-height:1.7}}
+#viz{{background:#fbfaf6;border:1px solid #d9d2c3;border-radius:4px}}
 </style></head><body>
 <h1>Odoriba（踊り場）</h1>
 <p class="lead">その家具、<b>部屋に置けても、そこまで運べますか？</b><br>
