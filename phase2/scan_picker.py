@@ -29,6 +29,7 @@ from urllib.parse import urlparse, parse_qs
 
 import numpy as np
 import plotly
+import trimesh
 
 import phase2_lstair as L
 import scan_plan as SP
@@ -41,51 +42,80 @@ OUT_DIR = Path(tempfile.mkdtemp(prefix="odoriba_picker_"))
 
 
 class App:
-    """読み込んだスキャン空間と、判定ジョブの状態を持つ。"""
+    """読み込んだスキャンと、判定ジョブの状態を持つ。
 
-    def __init__(self, mesh, seed, num_carriers):
+    床の図は撮れた床(上向きの面)すべてから作り、空間(ScanSpace)は判定の
+    ときに出発点の上を起点にして作る。起点を自動で選ぶと、つながっていない
+    小さな部屋に入って、そこにしか置けなくなることがあるため。一度作った
+    空間は、次の出発点がその中にあれば使い回す(作るのに約1分かかる)。
+    """
+
+    def __init__(self, mesh, num_carriers, seed=None):
         self.mesh = mesh
         self.num_carriers = num_carriers
-        print("[picker] スキャン空間を作っています(十数秒)...")
-        self.space = SS.ScanSpace(mesh, seed)
-        if self.space.leaked:
-            print("[picker] 注意: 撮れていない壁から空間が外へ漏れている。判定は信用できない")
-        xyz, _, _ = self.space._walk_graph()
-        self.floor = xyz            # 置ける場所 = 人が歩ける床
+        self.fixed_seed = seed
+        self.space = None
+        self.floor = self._floor_points()
         self.jobs = {}
         self.lock = threading.Lock()   # 中心線は ScanSpace に1つなので判定は1件ずつ
 
+    def _floor_points(self, n=30000):
+        """撮れた床(上向きの面)の上に、面積に比例して点を撒く(床の図用)。"""
+        nz = SS._floor_facing_z(self.mesh)
+        faces = np.flatnonzero(nz > 0.9)
+        sub = self.mesh.submesh([faces], append=True)
+        pts, _ = trimesh.sample.sample_surface(sub, n, seed=0)
+        return pts
+
     def floor_json(self):
-        """床の点(上から見た図用)。多すぎるとブラウザが重いので間引く。"""
         f = self.floor
-        if len(f) > 30000:
-            f = f[np.random.default_rng(0).choice(len(f), 30000, replace=False)]
         return {"x": np.round(f[:, 0], 1).tolist(), "y": np.round(f[:, 1], 1).tolist(),
                 "z": np.round(f[:, 2], 1).tolist(),
                 "furniture": [L.FURN_L, L.FURN_W, L.FURN_H],
-                "carriers": self.num_carriers, "leaked": self.space.leaked}
+                "carriers": self.num_carriers}
+
+    def _seed_near(self, start):
+        """出発点の上で、スキャンの面から一番離れた点(塗りつぶしの起点)。"""
+        base = np.asarray(start, dtype=float)
+        offs = [(dx, dy, dz) for dx in (-30, 0, 30) for dy in (-30, 0, 30)
+                for dz in (80, 100, 130)]
+        cand = base + np.array(offs, dtype=float)
+        _, dist, _ = trimesh.proximity.closest_point(self.mesh, cand)
+        return tuple(float(v) for v in cand[int(np.argmax(dist))])
+
+    def _ensure_space(self, job, start):
+        sp = self.space
+        if sp is not None and float(sp.clearance_points([np.asarray(start) + [0, 0, 100]])[0]) > 0:
+            return sp
+        self.jobs[job]["message"] = "空間を作っています(約1分)..."
+        seed = self.fixed_seed or self._seed_near(start)
+        self.space = SS.ScanSpace(self.mesh, seed)
+        return self.space
 
     def submit(self, start, goal):
         job = uuid.uuid4().hex[:8]
-        self.jobs[job] = {"state": "running", "message": "計算中..."}
+        self.jobs[job] = {"state": "running", "message": "順番を待っています..."}
         threading.Thread(target=self._run, args=(job, start, goal), daemon=True).start()
         return job
 
     def _run(self, job, start, goal):
         try:
             with self.lock:
-                self.space.build_centerline(start, goal)
-                result = SP.judge(self.space, num_carriers=self.num_carriers, rrt=False,
+                space = self._ensure_space(job, start)
+                self.jobs[job]["message"] = "計算中(十数秒〜1分)..."
+                space.build_centerline(start, goal)
+                result = SP.judge(space, num_carriers=self.num_carriers, rrt=False,
                                   log=lambda *_: None)
                 out = OUT_DIR / f"{job}.html"
-                SV.render_html(self.space, self.mesh, result, str(out),
+                SV.render_html(space, self.mesh, result, str(out),
                                num_carriers=self.num_carriers,
                                include_plotlyjs="/plotly.min.js")
             b, bh = result["bottleneck_furniture_only"], result["bottleneck"]
             self.jobs[job] = {"state": "done", "url": f"/result/{job}.html",
                               "furniture_only": b["capacity_cm"],
                               "with_carriers": bh["capacity_cm"],
-                              "length": self.space.centerline.s_total}
+                              "length": space.centerline.s_total,
+                              "leaked": space.leaked}
         except Exception as e:
             traceback.print_exc()
             self.jobs[job] = {"state": "error", "message": str(e)}
@@ -165,10 +195,11 @@ async function judge() {
   const t0 = Date.now();
   const poll = async () => {
     const s = await (await fetch('/status?job=' + job)).json();
-    if (s.state === 'running') { status('計算中... ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
+    if (s.state === 'running') { status(s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
     if (s.state === 'error') { status('判定できませんでした: ' + s.message); return; }
     const v = (c) => c >= 0 ? '余裕 ' + c.toFixed(1) + 'cm' : 'あと ' + (-c).toFixed(1) + 'cm 足りない';
-    status('経路 ' + Math.round(s.length) + 'cm / 家具だけ: ' + v(s.furniture_only) + ' / ' + F.carriers + '人で運ぶ: ' + v(s.with_carriers));
+    status('経路 ' + Math.round(s.length) + 'cm / 家具だけ: ' + v(s.furniture_only) + ' / ' + F.carriers + '人で運ぶ: ' + v(s.with_carriers) +
+      (s.leaked ? ' (注意: 撮れていない壁から空間が漏れている。判定は信用できない)' : ''));
     const fr = document.getElementById('result');
     fr.src = s.url; fr.style.display = 'block';
   };
@@ -178,7 +209,7 @@ function status(t) { document.getElementById('status').textContent = t; }
 fetch('/floor').then(r => r.json()).then(d => {
   F = d;
   document.getElementById('info').textContent = '家具 ' + d.furniture.map(Math.round).join('×') + 'cm / 運ぶ人 ' + d.carriers + '人' +
-    (d.leaked ? ' / 注意: 撮れていない壁から空間が漏れている。判定は信用できない' : '') + ' / 色のついた点が人の歩ける床。クリックで置く';
+    ' / 色のついた点が撮れた床。クリックで置く(段や家具の上面も含むので、歩く床の上に置く)';
   resetZ();
   document.getElementById('plan').on('plotly_click', onClick);
 });
@@ -240,7 +271,7 @@ def main():
     parser.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"))
     parser.add_argument("--carriers", type=int, choices=(1, 2), default=2)
     parser.add_argument("--seed", type=float, nargs=3, metavar=("X", "Y", "Z"),
-                        help="自由空間の中の1点(既定は自動)")
+                        help="自由空間の中の1点(既定は出発点の上から選ぶ)")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     args = parser.parse_args()
@@ -258,9 +289,7 @@ def main():
         mesh, _ = SD.load_scan_zup(args.mesh)
     else:
         parser.error("mesh を指定する(または --route)")
-    seed = args.seed or SS.auto_seed(mesh)
-
-    app = App(mesh, seed, args.carriers)
+    app = App(mesh, args.carriers, seed=args.seed)
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     url = f"http://localhost:{args.port}"
     print(f"[picker] {url} で起動しました(Ctrl+Cで終了)")
