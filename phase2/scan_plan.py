@@ -190,7 +190,7 @@ def state_at(space, s, z_extra=0.0):
 
 
 def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=True,
-          log=print):
+          rrt=True, log=print):
     """出発点→目的地を、家具単体と運搬者ありの両方で判定する。
 
     出発点・目的地の状態は中心線の両端から end_margin だけ内側に置く
@@ -207,7 +207,7 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
                        "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
                        "carrier": {"num_carriers": num_carriers, **L.body_meta()},
                        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": L.W_ROT}}}
-    for key, with_human in (("box_only", False), ("with_carriers", True)):
+    for key, with_human in ((("box_only", False), ("with_carriers", True)) if rrt else ()):
         path, tree = p.rrt_connect(
             start, goal, with_human=with_human, outer=space, obstacles=None,
             num_carriers=num_carriers, max_iter=max_iter, seed=seed, w_rot=L.W_ROT,
