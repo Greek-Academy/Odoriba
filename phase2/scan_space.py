@@ -91,13 +91,20 @@ class ScanSpace:
             c = np.stack([self.lo[0] + i * h + 0 * yy, self.lo[1] + yy * h,
                           self.lo[2] + zz * h], axis=-1)
             unsigned[i] = np.linalg.norm(c - q, axis=-1)
-        del ind
 
         # ---- 3. 内側/外側: 出発点から塗りつぶす ----
-        # 壁から leak_r より離れた所だけをたどって出発点とつながる領域を
-        # 求め(小さな穴は通れない)、そこから leak_r + 格子1つ分まで広げる。
-        # 広げた先も「表面ボクセルを横切らずに出発点とつながる」所に限り、
-        # 壁の裏側に回り込まないようにする。
+        # (a) 壁から leak_r より離れた所だけをたどって出発点とつながる領域
+        #     (中心部)を求める。半径 leak_r 未満の穴はここを通れない
+        # (b) 中心部から leak_r + 格子1つ分以内で、表面ボクセルを横切らずに
+        #     出発点とつながる所を候補にする
+        # (c) 候補のうち「一番近い面から離れる向きに進むと中心部に近づく」
+        #     所だけを自由空間とする。壁の手前なら面から離れると部屋の中央
+        #     (中心部)へ向かうが、小さな穴で壁の裏とつながった所では面から
+        #     離れると中心部から遠ざかる。距離の幅で絞るより壁際を取りこぼさない
+        #     表面ボクセル自身も、中心が面の手前(自由空間側)にあればこの判定で
+        #     自由空間に入れる(面が格子点の中間にあると、面を含むボクセルの
+        #     中心は面から最大1cm手前にずれるため。入れないと壁の手前1〜2cmが
+        #     負になる)
         start_v = self._voxel_index(start_xyz)
         if unsigned[start_v] <= leak_r:
             raise ValueError(f"出発点 {start_xyz} が壁から{leak_r:.0f}cm以内にある"
@@ -105,10 +112,33 @@ class ScanSpace:
         core_lab, _ = nd.label(unsigned > leak_r)
         core = core_lab == core_lab[start_v]
         del core_lab
-        reach = nd.distance_transform_edt(~core, sampling=h) <= leak_r + h
+        d_core = nd.distance_transform_edt(~core, sampling=h).astype(np.float32)
         open_lab, _ = nd.label(~surf)
-        free = reach & (open_lab == open_lab[start_v])
-        del open_lab, reach
+        cand = (d_core <= leak_r + h) & ((open_lab == open_lab[start_v]) | surf) & ~core
+        del open_lab
+        ci = np.nonzero(cand)
+        v = self.lo + np.column_stack(ci) * h
+        q = rep[rep_of[np.ravel_multi_index(tuple(ind[k][ci] for k in range(3)),
+                                            self.shape)]]
+        del ind
+        away = v - q
+        norm = np.linalg.norm(away, axis=1, keepdims=True)
+        away = away / np.maximum(norm, 1e-6)
+        probe = np.floor((v + away * 1.5 * h - self.lo) / h + 0.5).astype(np.int64)
+        probe = np.clip(probe, 0, np.array(self.shape) - 1)
+        ok = (d_core[tuple(probe.T)] < d_core[ci]) & (norm[:, 0] > 1e-6)
+        free = core.copy()
+        free[tuple(c[ok] for c in ci)] = True
+        del d_core, cand
+        # 自由空間がスキャン範囲(格子)の端まで届いた = 半径 leak_r 以上の穴から
+        # 外へ漏れた可能性が高い。撮れていない壁があるので撮り直しを促す
+        self.leaked = bool(free[0].any() or free[-1].any() or free[:, 0].any()
+                           or free[:, -1].any() or free[:, :, 0].any()
+                           or free[:, :, -1].any())
+        if self.leaked:
+            import warnings
+            warnings.warn(f"自由空間がスキャン範囲の端まで届いた: 半径{leak_r:.0f}cm以上の"
+                          "穴(撮れていない壁)がある可能性が高い。判定は信用できない")
         self.free = free
         self.phi = np.where(free, unsigned, -unsigned).astype(np.float32)
 
