@@ -26,7 +26,7 @@
 
 | 業者 | 地域・特徴 | URL | 状況 |
 |---|---|---|---|
-| ピアノ運送株式会社 | 大阪営業所（吹田）・神戸営業所あり。創業110年以上。クレーンで窓から搬入も対応 | https://www.piano.co.jp/piano/company/index.php | 未連絡 |
+| ピアノ運送株式会社 | 大阪営業所（吹田）・神戸営業所あり。創業110年以上。クレーンで窓から搬入も対応 | https://www.piano.co.jp/piano/company/index.php | 送信済み（2026-10-06、問い合わせフォーム https://contact.piano.co.jp/contact/ ）。返信待ち |
 | 株式会社立明 | 大阪。ピアノ運送から調律まで | https://ritumei.co.jp/ | 未連絡 |
 | 池田ピアノ運送 | 1970年創業 | https://www.ikedapiano.co.jp/ | 未連絡 |
 | 株式会社髙吉運送（ピアノライン） | 姫路 | https://piano-line.com/ | 未連絡 |
