@@ -29,7 +29,7 @@
     "capacity_cm": -14.380917145513195,
     "breakdown": {
      "furniture": -14.380917145513195,
-     "carrier_body": 2.5544350051276297,
+     "carrier_body": 3.751566042995023,
      "reach": -37.24495743884313,
      "tilt_deg": 70.0,
      "max_tilt_deg": 70.0,
@@ -41,7 +41,7 @@
     "capacity_cm": -5.684341886080802e-14,
     "breakdown": {
      "furniture": -5.684341886080802e-14,
-     "carrier_body": -4.021130325903073,
+     "carrier_body": -8.06510661383902,
      "reach": -27.075123965493077,
      "tilt_deg": 70.00000000000004,
      "max_tilt_deg": 90.0,
@@ -85,6 +85,42 @@
     }
    },
    "傾き自由・届く範囲なし": {
+    "s": 520.0,
+    "capacity_cm": 8.0,
+    "breakdown": {
+     "furniture": 8.0,
+     "carrier_body": 8.213793103448268,
+     "reach": -52.0,
+     "tilt_deg": 90.0,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "既定(円柱)": {
+    "s": 550.0,
+    "capacity_cm": -28.980085074496856,
+    "breakdown": {
+     "furniture": -28.980085074496856,
+     "carrier_body": null,
+     "reach": null,
+     "tilt_deg": 55.0,
+     "max_tilt_deg": 55.0,
+     "limiting": "furniture"
+    }
+   },
+   "傾き上限なし(円柱)": {
+    "s": 565.0,
+    "capacity_cm": -5.684341886080802e-14,
+    "breakdown": {
+     "furniture": -5.684341886080802e-14,
+     "carrier_body": -4.021130325903073,
+     "reach": -27.075123965493077,
+     "tilt_deg": 70.00000000000004,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "傾き自由・届く範囲なし(円柱)": {
     "s": 490.0,
     "capacity_cm": 8.0,
     "breakdown": {
@@ -120,7 +156,7 @@
     "capacity_cm": -14.380917145513195,
     "breakdown": {
      "furniture": -14.380917145513195,
-     "carrier_body": -1.4926981603884428,
+     "carrier_body": 1.0226840504707368,
      "reach": -37.24495743884313,
      "tilt_deg": 70.0,
      "max_tilt_deg": 70.0,
@@ -128,13 +164,13 @@
     }
    },
    "傾き上限なし": {
-    "s": 685.0,
-    "capacity_cm": -4.263256414560601e-14,
+    "s": 490.0,
+    "capacity_cm": -2.842170943040401e-14,
     "breakdown": {
-     "furniture": -4.263256414560601e-14,
-     "carrier_body": -5.0,
-     "reach": -27.07512396549305,
-     "tilt_deg": 70.00000000000001,
+     "furniture": -2.842170943040401e-14,
+     "carrier_body": 5.137931034482733,
+     "reach": -40.00000000000003,
+     "tilt_deg": 90.0,
      "max_tilt_deg": 90.0,
      "limiting": "reach"
     }
@@ -176,6 +212,42 @@
     }
    },
    "傾き自由・届く範囲なし": {
+    "s": 520.0,
+    "capacity_cm": 8.76106038165085,
+    "breakdown": {
+     "furniture": 8.76106038165085,
+     "carrier_body": -0.9432873723594355,
+     "reach": -53.957342200400376,
+     "tilt_deg": 85.00000000000009,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "既定(円柱)": {
+    "s": 550.0,
+    "capacity_cm": -28.980085074496856,
+    "breakdown": {
+     "furniture": -28.980085074496856,
+     "carrier_body": null,
+     "reach": null,
+     "tilt_deg": 55.0,
+     "max_tilt_deg": 55.0,
+     "limiting": "furniture"
+    }
+   },
+   "傾き上限なし(円柱)": {
+    "s": 685.0,
+    "capacity_cm": -4.263256414560601e-14,
+    "breakdown": {
+     "furniture": -4.263256414560601e-14,
+     "carrier_body": -5.0,
+     "reach": -27.07512396549305,
+     "tilt_deg": 70.00000000000001,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "傾き自由・届く範囲なし(円柱)": {
     "s": 490.0,
     "capacity_cm": 8.0,
     "breakdown": {
@@ -211,7 +283,7 @@
     "capacity_cm": -14.380917145513195,
     "breakdown": {
      "furniture": -14.380917145513195,
-     "carrier_body": 2.5544350051276297,
+     "carrier_body": 3.751566042995023,
      "reach": -20.24495743884313,
      "tilt_deg": 70.0,
      "max_tilt_deg": 70.0,
@@ -223,7 +295,7 @@
     "capacity_cm": -0.5341998646475759,
     "breakdown": {
      "furniture": -0.5341998646475759,
-     "carrier_body": 16.552643617305,
+     "carrier_body": 19.934238746520396,
      "reach": -70.0,
      "tilt_deg": 90.0,
      "max_tilt_deg": 90.0,
@@ -267,6 +339,42 @@
     }
    },
    "傾き自由・届く範囲なし": {
+    "s": 490.0,
+    "capacity_cm": 5.257975491891102,
+    "breakdown": {
+     "furniture": 5.257975491891102,
+     "carrier_body": 10.255579988845625,
+     "reach": -33.24495743884313,
+     "tilt_deg": 70.00000000000001,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "既定(円柱)": {
+    "s": 520.0,
+    "capacity_cm": -28.980085074496856,
+    "breakdown": {
+     "furniture": -28.980085074496856,
+     "carrier_body": null,
+     "reach": null,
+     "tilt_deg": 55.0,
+     "max_tilt_deg": 55.0,
+     "limiting": "furniture"
+    }
+   },
+   "傾き上限なし(円柱)": {
+    "s": 505.0,
+    "capacity_cm": -0.5341998646475759,
+    "breakdown": {
+     "furniture": -0.5341998646475759,
+     "carrier_body": 16.552643617305,
+     "reach": -70.0,
+     "tilt_deg": 90.0,
+     "max_tilt_deg": 90.0,
+     "limiting": "reach"
+    }
+   },
+   "傾き自由・届く範囲なし(円柱)": {
     "s": 490.0,
     "capacity_cm": 5.257975491891102,
     "breakdown": {
