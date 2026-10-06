@@ -166,7 +166,8 @@ def main():
         holed = punch_holes(mesh, holes, r)
         sp2 = SS.ScanSpace(holed, seed_xyz)
         sp2.centerline = space.centerline
-        print(f"\n壁に半径{r:.0f}cmの穴を{len(holes)}つ開けた場合:")
+        print(f"\n壁に半径{r:.0f}cmの穴を{len(holes)}つ開けた場合 "
+              f"(穴から外へ漏れた警告: {'あり' if sp2.leaked else 'なし'}):")
         res = run(f"穴{r:.0f}cm", sp2)
         for wh in (False, True):
             d = max(abs(a[1] - b[1]) for a, b in zip(res[wh][2], scan[wh][2])
