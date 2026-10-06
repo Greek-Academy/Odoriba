@@ -197,7 +197,7 @@ if (FIG) Plotly.newPlot('viz', FIG.data, FIG.layout, {{responsive: true}});
 </script>
 <h2>くわしく見る</h2>
 <div class="links">{links}</div>
-<p class="note">運ぶ人は2人、体を円柱(半径20cm・身長170cm)で近似。家具を傾けられるのは55度まで、
+<p class="note">運ぶ人は2人、体を人型(身長170cm・肩幅40cm・胴の厚み24cm、腕と頭を含む)で近似。家具を傾けられるのは55度まで、
 持つ高さは10〜190cmと仮定しています。結果は研究中の試作品によるものです。</p>
 <script>
 function setv(o){{for(const k in o)document.querySelector('[name='+k+']').value=o[k];}}
