@@ -123,6 +123,15 @@ def shape_clearance_3d(points, outer, obstacles):
     安全側の近似。Phase 1のL字廊下は正確な多角形距離を使っていたが、
     3Dの合併の正確な距離は割に合わないのでここは近似で通す。
     """
+    return float(np.min(clearance_points_3d(points, outer, obstacles)))
+
+
+def clearance_points_3d(points, outer, obstacles):
+    """各点のクリアランス(cm)の配列。shape_clearance_3dはこの最小値。
+
+    点ごとの値が要るのは、部位ごとに半径を引く人型の体の判定
+    (phase2_lstair.carrier_body_clearance)。
+    """
     pts = np.asarray(points)
     inner = np.max(
         np.stack([-g3.obb_sdf_points(pts, c, r, h) for c, r, h in _outer_boxes(outer)]),
@@ -131,7 +140,7 @@ def shape_clearance_3d(points, outer, obstacles):
     for center, rot, half in obstacles:
         # 障害物の外なら+、めり込んでいれば-
         worst = np.minimum(worst, g3.obb_sdf_points(pts, center, rot, half))
-    return float(np.min(worst))
+    return worst
 
 
 def furniture_world_points(pos, quat):

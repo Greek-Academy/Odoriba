@@ -163,23 +163,44 @@ def elbow_position(shoulder, hand, outward):
 
 # ---- 1人分 ----
 
-def figure_mesh(foot_xy, floor_z, facing_xy, hands):
+def skeleton(foot_xy, floor_z, facing_xy, hands):
     """足元(foot_xy, floor_z)に立ち、facing_xyの方向を向いて、
     両手をhands(左右の手先の目標点2つ、ワールド座標)に伸ばした人の
-    メッシュ(verts, tris)を返す。"""
+    関節位置と体の向きの基底を返す。
+
+    描画(figure_mesh)と判定用の体(body_parts)の両方がこれを使い、
+    見た目と判定で関節位置がずれないようにする。
+    """
     f = np.array([facing_xy[0], facing_xy[1], 0.0], dtype=float)
     f /= np.linalg.norm(f)
     s = np.array([-f[1], f[0], 0.0])        # 体の左方向
     z = np.array([0.0, 0.0, 1.0])
     base = np.array([foot_xy[0], foot_xy[1], floor_z], dtype=float)
 
-    def at(height, side=0.0, fwd=0.0):
-        return base + z * height + s * side + f * fwd
+    def at(height, side=0.0):
+        return base + z * height + s * side
+
+    # 左寄りの目標点を左手に割り当て、腕が交差しないようにする
+    hands = sorted((np.asarray(h, dtype=float) for h in hands),
+                   key=lambda h: -((h - base) @ s))
+    arms = []
+    for sign, hand in zip((1.0, -1.0), hands):
+        shoulder = at(SHOULDER_Z - ARM_R, sign * (SHOULDER_HW - ARM_R))
+        arms.append((shoulder, elbow_position(shoulder, hand, s * sign), hand))
+    return dict(f=f, s=s, z=z, at=at,
+                hips=[at(HIP_Z, side) for side in (HIP_HW, -HIP_HW)],
+                head=at(HEIGHT - HEAD_R), arms=arms)
+
+
+def figure_mesh(foot_xy, floor_z, facing_xy, hands):
+    """skeletonと同じ引数で、その人のメッシュ(verts, tris)を返す。"""
+    sk = skeleton(foot_xy, floor_z, facing_xy, hands)
+    f, s, z, at = sk["f"], sk["s"], sk["z"], sk["at"]
 
     parts = []
     # 脚: 股関節から足首まで
-    for side in (HIP_HW, -HIP_HW):
-        parts.append(capsule(at(HIP_Z, side), at(LEG_R, side), LEG_R, cap_a=False))
+    for hip in sk["hips"]:
+        parts.append(capsule(hip, hip - z * (HIP_Z - LEG_R), LEG_R, cap_a=False))
     # 胴: 腰(楕円体)から肩(楕円体)までを楕円柱でつなぐ。肩幅が広く前後は薄い
     chest_z = SHOULDER_Z - 6.0
     parts.append(_transform(_CYLINDER,
@@ -189,18 +210,64 @@ def figure_mesh(foot_xy, floor_z, facing_xy, hands):
     parts.append(ellipsoid(at(HIP_Z), f * TORSO_HD, s * WAIST_HW, z * 8.0))
     parts.append(ellipsoid(at(chest_z), f * TORSO_HD, s * SHOULDER_HW, z * 8.0))
     # 首と頭
-    head_c = at(HEIGHT - HEAD_R)
-    parts.append(capsule(at(SHOULDER_Z), head_c - z * HEAD_R, NECK_R,
+    parts.append(capsule(at(SHOULDER_Z), sk["head"] - z * HEAD_R, NECK_R,
                          cap_a=False, cap_b=False))
-    parts.append(sphere(head_c, HEAD_R))
-    # 腕: 肩 -> 肘 -> 手。左寄りの目標点を左手に割り当て、腕が交差しないようにする
-    hands = sorted((np.asarray(h, dtype=float) for h in hands),
-                   key=lambda h: -((h - base) @ s))
-    for sign, hand in zip((1.0, -1.0), hands):
-        shoulder = at(SHOULDER_Z - ARM_R, sign * (SHOULDER_HW - ARM_R))
-        hand = np.asarray(hand, dtype=float)
-        elbow = elbow_position(shoulder, hand, s * sign)
+    parts.append(sphere(sk["head"], HEAD_R))
+    # 腕: 肩 -> 肘 -> 手
+    for shoulder, elbow, hand in sk["arms"]:
         parts.append(capsule(shoulder, elbow, ARM_R))
         parts.append(capsule(elbow, hand, ARM_R * 0.85, cap_a=False, cap_b=False))
         parts.append(sphere(hand, HAND_R))
     return merge(parts)
+
+
+# ---- 判定用の体(球を掃いた形の組み合わせ) ----
+
+def _segment_points(a, b, ts):
+    return [a + (b - a) * t for t in ts]
+
+
+def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
+    """衝突判定用の体を [(骨格の点群, 半径), ...] で返す。
+
+    各部位を「骨格(点・線分・面)を半径rの球で掃いた形」で表す。
+    骨格の点の符号付き距離の最小値からrを引けば、その部位の壁までの
+    余裕になる(表面に点を撒くより点が少なく、掃いた形に対しては正確)。
+    関節位置はskeletonと共通なので、figure_meshの見た目と一致する。
+
+      胴: 左右 ±(肩幅の半分 - 厚みの半分)・腰から肩までの縦長の面を、
+          胴の厚みの半分で掃く(横幅=肩幅、前後=胴の厚み)
+      頭: 球
+      脚: 股関節から膝下(leg_clear)までの線分。膝下は細く隣の段と
+          干渉しない、という円柱モデルと同じ近似で除外する
+      腕: 肩→肘→手首。手先は家具の端面に触れているので含めない
+          (含めると家具自身の余裕を二重に数え、手の半径の分だけ
+          家具より厳しくなってしまう)
+    """
+    sk = skeleton(foot_xy, floor_z, facing_xy, hands)
+    at = sk["at"]
+    side = SHOULDER_HW - TORSO_HD
+    torso = [at(h, sd) for h in np.linspace(HIP_Z, SHOULDER_Z, 4)
+             for sd in (-side, 0.0, side)]
+    legs = []
+    for hip in sk["hips"]:
+        knee = hip - sk["z"] * (HIP_Z - leg_clear - LEG_R)
+        legs += _segment_points(hip, knee, (0.0, 0.5, 1.0))
+    arms = []
+    for shoulder, elbow, hand in sk["arms"]:
+        arms += _segment_points(shoulder, elbow, (0.0, 0.5, 1.0))
+        arms += _segment_points(elbow, hand, (0.4, 0.7, 0.85))
+    return [(np.array(torso), TORSO_HD), (sk["head"][None, :], HEAD_R),
+            (np.array(legs), LEG_R), (np.array(arms), ARM_R)]
+
+
+def body_clearance(parts, clearance_fn):
+    """body_partsの各部位の余裕(cm)の最小値。
+
+    clearance_fnは点群を受け取り、各点の符号付き距離の配列を返す関数
+    (環境ごとに差し替える)。全部位の点をまとめて1回で呼ぶ(呼び出し
+    回数が判定の速度を決めるため)。複数人分のpartsを連結して渡してもよい。
+    """
+    pts = np.vstack([pts for pts, _ in parts])
+    radii = np.concatenate([np.full(len(pts), r) for pts, r in parts])
+    return float(np.min(np.asarray(clearance_fn(pts)) - radii))

@@ -17,6 +17,8 @@ pitchの主張(人体の占有が失敗の主因)がどの条件で成り立つ�
   届く範囲なし 持つ高さの制約を無視
   体・届く範囲なし 傾き上限55度だけ残す
   傾き自由・届く範囲なし 運搬者の体だけ残す(体の占有が単独で効くかを見る)
+  (円柱)が付く列 体の判定モデルを人型から従来の円柱に戻した同条件
+              (体のモデルを変えた影響を同じ表で比べる)
 
 実行(リポジトリの phase2/ で、数分かかる):
     python sensitivity.py                    # results/sensitivity.json に保存
@@ -32,16 +34,19 @@ import phase2_lstair as L
 import phase2_ustair as U
 import phase2_winder as W
 
-# (列名, 運搬者あり, 傾き上限, 有効にするオラクルの項)
+# (列名, 運搬者あり, 傾き上限, 有効にするオラクルの項, 体の判定モデル)
 CONDITIONS = [
-    ("家具単体", False, 90.0, {"reach": True, "body": True}),
-    ("既定", True, 55.0, {"reach": True, "body": True}),
-    ("傾き70度", True, 70.0, {"reach": True, "body": True}),
-    ("傾き上限なし", True, 90.0, {"reach": True, "body": True}),
-    ("体なし", True, 55.0, {"reach": True, "body": False}),
-    ("届く範囲なし", True, 55.0, {"reach": False, "body": True}),
-    ("体・届く範囲なし", True, 55.0, {"reach": False, "body": False}),
-    ("傾き自由・届く範囲なし", True, 90.0, {"reach": False, "body": True}),
+    ("家具単体", False, 90.0, {"reach": True, "body": True}, "humanoid"),
+    ("既定", True, 55.0, {"reach": True, "body": True}, "humanoid"),
+    ("傾き70度", True, 70.0, {"reach": True, "body": True}, "humanoid"),
+    ("傾き上限なし", True, 90.0, {"reach": True, "body": True}, "humanoid"),
+    ("体なし", True, 55.0, {"reach": True, "body": False}, "humanoid"),
+    ("届く範囲なし", True, 55.0, {"reach": False, "body": True}, "humanoid"),
+    ("体・届く範囲なし", True, 55.0, {"reach": False, "body": False}, "humanoid"),
+    ("傾き自由・届く範囲なし", True, 90.0, {"reach": False, "body": True}, "humanoid"),
+    ("既定(円柱)", True, 55.0, {"reach": True, "body": True}, "cylinder"),
+    ("傾き上限なし(円柱)", True, 90.0, {"reach": True, "body": True}, "cylinder"),
+    ("傾き自由・届く範囲なし(円柱)", True, 90.0, {"reach": False, "body": True}, "cylinder"),
 ]
 
 # (名前, 環境を作る関数, 掃引関数, 歩行面関数)
@@ -55,12 +60,14 @@ STAIRS = [
 ]
 
 
-def run_condition(build, sweep, floor_fn, with_human, max_tilt, terms):
+def run_condition(build, sweep, floor_fn, with_human, max_tilt, terms, body_model):
     """1条件ぶんの掃引を回し、最も狭い位置の余裕と内訳を返す。
     L のモジュール変数を一時的に書き換え、終わったら必ず戻す。"""
     orig_tilt, orig_terms = L.MAX_TILT_DEG, dict(L.ORACLE_TERMS)
+    orig_body = L.BODY_MODEL
     try:
         L.MAX_TILT_DEG = max_tilt
+        L.BODY_MODEL = body_model
         L.ORACLE_TERMS.update(terms)
         outer, obstacles = build()
         res = [r for r in sweep(outer, obstacles, with_human) if np.isfinite(r[1])]
@@ -72,6 +79,7 @@ def run_condition(build, sweep, floor_fn, with_human, max_tilt, terms):
         return {"s": s, "capacity_cm": c, "breakdown": bd}
     finally:
         L.MAX_TILT_DEG = orig_tilt
+        L.BODY_MODEL = orig_body
         L.ORACLE_TERMS.clear()
         L.ORACLE_TERMS.update(orig_terms)
 
@@ -82,9 +90,10 @@ def main():
     table = {}
     for name, build, sweep, floor_fn in STAIRS:
         table[name] = {}
-        for col, with_human, max_tilt, terms in CONDITIONS:
+        for col, with_human, max_tilt, terms, body_model in CONDITIONS:
             t0 = time.time()
-            r = run_condition(build, sweep, floor_fn, with_human, max_tilt, terms)
+            r = run_condition(build, sweep, floor_fn, with_human, max_tilt, terms,
+                              body_model)
             table[name][col] = r
             limiting = (L.BREAKDOWN_LABELS[r["breakdown"]["limiting"]]
                         if r["breakdown"] else "-")
