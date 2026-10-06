@@ -38,6 +38,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 import geometry3d as g3
+import human_figure as hf
 import phase2_demo as p
 
 # SE(3)距離の回転項の重み。phase2_demo.W_ROT=0.4は自身のdocstring
@@ -269,6 +270,63 @@ def carrier_points(center):
     return _CARRIER_LOCAL + np.asarray(center)
 
 
+# 運搬者の体の判定モデル。"humanoid"(既定)は human_figure の人型
+# (横幅=肩幅40cm、前後=胴の厚み24cm、腕・頭・膝上の脚)、"cylinder" は
+# 従来の円柱(carrier_points)。感度分析(sensitivity.py)で新旧を比べるために残す。
+BODY_MODEL = "humanoid"
+# 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
+HAND_HALF_SPREAD = 18.0
+
+
+def _carrier_frame(pos, R, sign, side_offset, center):
+    """運搬者1人の足元の床の高さ・正面の向き(水平xy)・両手の目標点。
+
+    手の目標点は家具の端面上(把持点の高さ)に置く。正面は家具の中心の
+    方向。家具が縦に立っていて真上/真下にあるときは、長軸の水平成分
+    (の逆向き)で代用する。判定(carrier_body_clearance)と描画
+    (carrier_poses_lstair)で共通に使う。
+    """
+    hl, hw = FURN_L / 2, FURN_W / 2
+    hands = [pos + R @ np.array([sign * hl, float(np.clip(side_offset + d, -hw, hw)), 0.0])
+             for d in (HAND_HALF_SPREAD, -HAND_HALF_SPREAD)]
+    facing = (pos - center)[:2]
+    if np.linalg.norm(facing) < 1e-6:
+        facing = -sign * (R @ np.array([1.0, 0.0, 0.0]))[:2]
+    if np.linalg.norm(facing) < 1e-6:
+        facing = np.array([1.0, 0.0])
+    floor = float(center[2] - _CARRIER_HALF_H - LEG_CLEAR)
+    return floor, facing, hands
+
+
+def body_meta():
+    """結果JSONのmeta.carrierに足す、体の判定モデルの記録。"""
+    return {"body_model": BODY_MODEL, "shoulder_width": 2 * hf.SHOULDER_HW,
+            "torso_depth": 2 * hf.TORSO_HD}
+
+
+def _carrier_signs(n):
+    """place_humans_lstairの戻り値の順に対応する、長軸方向の符号。"""
+    return (-1.0,) if n == 1 else (1.0, -1.0)
+
+
+def carrier_body_clearance(pos, quat, side_offset, placed, clearance_fn):
+    """運搬者全員の体の余裕(cm)の最小値。
+
+    placedはplace_humans_lstairの戻り値。clearance_fnは点群の各点の
+    符号付き距離の配列を返す関数で、直方体の環境なら p.clearance_points_3d、
+    メッシュ環境ならその版を渡す(体の形の扱いを環境ごとに書かずに済む)。
+    """
+    if BODY_MODEL == "cylinder":
+        return min(float(np.min(clearance_fn(carrier_points(c)))) for c, _ in placed)
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    parts = []
+    for sign, (center, _) in zip(_carrier_signs(len(placed)), placed):
+        floor, facing, hands = _carrier_frame(pos, R, sign, side_offset, center)
+        parts += hf.body_parts(center[:2], floor, facing, hands, LEG_CLEAR)
+    return hf.body_clearance(parts, clearance_fn)
+
+
 def _pose(yaw_deg, pitch_deg, roll_deg=0.0):
     """ヨー(z)->ピッチ(長軸の仰角)->ロールの順に合成した姿勢。
 
@@ -400,11 +458,12 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
         if placed is None:
             continue
         terms = [bc]
-        for center, reach_margin in placed:
-            if ORACLE_TERMS["reach"]:
-                terms.append(reach_margin)
-            if ORACLE_TERMS["body"]:
-                terms.append(p.shape_clearance_3d(carrier_points(center), outer, obstacles))
+        if ORACLE_TERMS["reach"]:
+            terms += [reach_margin for _, reach_margin in placed]
+        if ORACLE_TERMS["body"]:
+            terms.append(carrier_body_clearance(
+                pos, quat, off, placed,
+                lambda pts: p.clearance_points_3d(pts, outer, obstacles)))
         cand = min(terms)
         if cand > best:
             best = cand
@@ -447,7 +506,8 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
         placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
         if placed is None:
             continue
-        body = min(p.shape_clearance_3d(carrier_points(c), outer, obstacles) for c, _ in placed)
+        body = carrier_body_clearance(pos, quat, off, placed,
+                                      lambda pts: p.clearance_points_3d(pts, outer, obstacles))
         reach = min(m for _, m in placed)
         if min(body, reach) > best:
             best = min(body, reach)
@@ -483,10 +543,6 @@ def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
     return furniture_clearance(pos, quat, outer, obstacles) >= 0
 
 
-# 描画用: 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
-HAND_HALF_SPREAD = 18.0
-
-
 def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
                          floor_fn=None):
     """描画専用: 最良の横位置で、運搬者を人の形で描くための姿勢のリスト。
@@ -504,29 +560,19 @@ def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=Non
         off = 0.0
     pos = np.asarray(pos)
     R = g3.rotmat_from_quat(quat)
-    hl = FURN_L / 2
-    signs = (-1.0,) if (num_carriers or p.NUM_CARRIERS) == 1 else (1.0, -1.0)
+    signs = _carrier_signs(1 if (num_carriers or p.NUM_CARRIERS) == 1 else 2)
     placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
     if placed is None:
         # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
-        centers = [pos + R @ np.array([sg * (hl + p.CARRY_ARM), 0.0, 0.0]) for sg in signs]
+        centers = [pos + R @ np.array([sg * (FURN_L / 2 + p.CARRY_ARM), 0.0, 0.0])
+                   for sg in signs]
     else:
         centers = [c for c, _ in placed]
 
-    hw = FURN_W / 2
     poses = []
     for sg, center in zip(signs, centers):
-        hands = [pos + R @ np.array([sg * hl, float(np.clip(off + d, -hw, hw)), 0.0])
-                 for d in (HAND_HALF_SPREAD, -HAND_HALF_SPREAD)]
-        # 正面は家具の中心の方向。家具が縦に立っていて真上/真下にある
-        # ときは、長軸の水平成分(の逆向き)で代用する
-        facing = (pos - center)[:2]
-        if np.linalg.norm(facing) < 1e-6:
-            facing = -sg * (R @ np.array([1.0, 0.0, 0.0]))[:2]
-        if np.linalg.norm(facing) < 1e-6:
-            facing = np.array([1.0, 0.0])
-        poses.append(dict(center=center, foot_xy=center[:2],
-                          floor_z=float(center[2] - _CARRIER_HALF_H - LEG_CLEAR),
+        floor, facing, hands = _carrier_frame(pos, R, sg, off, center)
+        poses.append(dict(center=center, foot_xy=center[:2], floor_z=floor,
                           facing=facing, hands=hands))
     return poses
 
@@ -833,7 +879,7 @@ def result_meta(num_carriers, max_iter, seed):
         "carrier": {"r": p.HUMAN_R, "height": p.HUMAN_HEIGHT, "arm": p.CARRY_ARM,
                     "leg_clear": LEG_CLEAR,
                     "reach": [REACH_MIN, REACH_MAX], "max_tilt_deg": MAX_TILT_DEG,
-                    "num_carriers": num_carriers},
+                    "num_carriers": num_carriers, **body_meta()},
         "planner": {"max_iter": max_iter, "seed": seed, "w_rot": W_ROT},
     }
 
