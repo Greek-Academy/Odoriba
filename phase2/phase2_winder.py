@@ -395,7 +395,7 @@ def result_meta(num_carriers, max_iter, seed):
         "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM,
                     "leg_clear": L.LEG_CLEAR,
                     "reach": [L.REACH_MIN, L.REACH_MAX], "max_tilt_deg": L.MAX_TILT_DEG,
-                    "num_carriers": num_carriers},
+                    "num_carriers": num_carriers, **L.body_meta()},
         "planner": {"max_iter": max_iter, "seed": seed, "w_rot": L.W_ROT},
     }
 

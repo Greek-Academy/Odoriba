@@ -110,9 +110,9 @@ class MeshEnv:
             placed = L.place_humans_lstair(pos, quat, off, num_carriers)
             if placed is None:
                 continue
-            ok = all(reach >= 0 and
-                     self.shape_clearance(L.carrier_points(c)) >= 0
-                     for c, reach in placed)
+            ok = (all(reach >= 0 for _, reach in placed) and
+                  L.carrier_body_clearance(pos, quat, off, placed,
+                                           self.signed_clearance_points) >= 0)
             if ok:
                 return True
         return False
