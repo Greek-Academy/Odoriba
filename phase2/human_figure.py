@@ -219,3 +219,49 @@ def figure_mesh(foot_xy, floor_z, facing_xy, hands):
         parts.append(capsule(elbow, hand, ARM_R * 0.85, cap_a=False, cap_b=False))
         parts.append(sphere(hand, HAND_R))
     return merge(parts)
+
+
+# ---- 判定用の体(球を掃いた形の組み合わせ) ----
+
+def _segment_points(a, b, ts):
+    return [a + (b - a) * t for t in ts]
+
+
+def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
+    """衝突判定用の体を [(骨格の点群, 半径), ...] で返す。
+
+    各部位を「骨格(点・線分・面)を半径rの球で掃いた形」で表す。
+    骨格の点の符号付き距離の最小値からrを引けば、その部位の壁までの
+    余裕になる(表面に点を撒くより点が少なく、掃いた形に対しては正確)。
+    関節位置はskeletonと共通なので、figure_meshの見た目と一致する。
+
+      胴: 左右 ±(肩幅の半分 - 厚みの半分)・腰から肩までの縦長の面を、
+          胴の厚みの半分で掃く(横幅=肩幅、前後=胴の厚み)
+      頭: 球
+      脚: 股関節から膝下(leg_clear)までの線分。膝下は細く隣の段と
+          干渉しない、という円柱モデルと同じ近似で除外する
+      腕: 肩→肘→手首。手先は家具の端面に触れているので含めない
+          (含めると家具自身の余裕を二重に数え、手の半径の分だけ
+          家具より厳しくなってしまう)
+    """
+    sk = skeleton(foot_xy, floor_z, facing_xy, hands)
+    at = sk["at"]
+    side = SHOULDER_HW - TORSO_HD
+    torso = [at(h, sd) for h in np.linspace(HIP_Z, SHOULDER_Z, 4)
+             for sd in (-side, 0.0, side)]
+    legs = []
+    for hip in sk["hips"]:
+        knee = hip - sk["z"] * (HIP_Z - leg_clear - LEG_R)
+        legs += _segment_points(hip, knee, (0.0, 0.5, 1.0))
+    arms = []
+    for shoulder, elbow, hand in sk["arms"]:
+        arms += _segment_points(shoulder, elbow, (0.0, 0.5, 1.0))
+        arms += _segment_points(elbow, hand, (0.4, 0.7, 0.85))
+    return [(np.array(torso), TORSO_HD), (sk["head"][None, :], HEAD_R),
+            (np.array(legs), LEG_R), (np.array(arms), ARM_R)]
+
+
+def body_clearance(parts, clearance_fn):
+    """body_partsの各部位の余裕(cm)の最小値。clearance_fnは点群を
+    受け取り、その中で最悪の符号付き距離を返す関数(環境ごとに差し替える)。"""
+    return min(clearance_fn(pts) - r for pts, r in parts)
