@@ -48,6 +48,7 @@ HEADROOM = 150.0       # 床とみなすのに必要な頭上の余裕
 MAX_STEP = 25.0        # 中心線で1歩に越えられる段差
 WALK_CLEAR = 18.0      # 中心線を引く床の、腰の高さでの壁までの最小余裕
 FLOOR_TOL = 5.0        # 高さのヒントより少し上の床まで許す(ヒントの誤差分)
+ENDPOINT_PULL = 60.0   # 提案した出発点・目的地を、この範囲で通路の中央へ寄せる
 # 撮れた床の範囲で空間を区切る(confine_to_floor)ときの寸法
 # 床からこの高さまでを空間とみなす(天井が撮れていない所の上限)。家具を傾けて
 # 持ち上げると上端は床から約3mに達し、階段の吹き抜けは天井が高いので、
@@ -74,6 +75,41 @@ def _floor_facing_z(mesh):
     up = area[low & (nz > 0.9)].sum()
     down = area[low & (nz < -0.9)].sum()
     return -nz if down > up else nz
+
+
+def auto_seed(mesh, height=100.0, n=300, seed=0):
+    """塗りつぶしの起点(自由空間の中の1点)を自動で選ぶ。
+
+    一番低い階の床(上向きの面のうち、面積で見て下から5%の高さの±30cm)の
+    上 height の点を n 個とり、メッシュの面から一番離れたものを返す。部屋や
+    廊下の中央あたりになる。一番低い階にするのは、玄関は普通そこにあり、
+    吹き抜けのような天井の高い所を選んで小さな床のかたまりから始めないため。
+    """
+    nz = _floor_facing_z(mesh)
+    faces = np.flatnonzero(nz > 0.9)
+    if len(faces) == 0:
+        raise ValueError("床(上向きの面)が見つからない")
+    fz = mesh.triangles_center[faces, 2]
+    order = np.argsort(fz)
+    cum = np.cumsum(mesh.area_faces[faces][order])
+    z_low = fz[order][np.searchsorted(cum, 0.05 * cum[-1])]
+    faces = faces[np.abs(fz - z_low) <= 30.0]
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(faces, size=min(n, len(faces)), replace=False,
+                      p=mesh.area_faces[faces] / mesh.area_faces[faces].sum())
+    cand = mesh.triangles_center[pick] + np.array([0.0, 0.0, height])
+    # 小さな物の上面(ドアノブ・扉の上端など)から上へ伸ばすと天井より上
+    # (スキャンの外)に出て、「面から遠い点」として選ばれてしまう。メッシュの
+    # 上端より下で、真上に面(天井)がある候補に絞る。天井が撮れていない
+    # スキャンで1つも残らなければ、天井の条件は外す。
+    cand = cand[cand[:, 2] < mesh.bounds[1][2] - 20.0]
+    if len(cand) == 0:
+        raise ValueError("起点の候補が見つからない(床の上に空間がない)")
+    covered = mesh.ray.intersects_any(cand, np.tile([0.0, 0.0, 1.0], (len(cand), 1)))
+    if covered.any():
+        cand = cand[covered]
+    _, dist, _ = trimesh.proximity.closest_point(mesh, cand)
+    return tuple(float(v) for v in cand[int(np.argmax(dist))])
 
 
 class ScanSpace:
@@ -320,13 +356,16 @@ class ScanSpace:
 
     # ---- 中心線 ----
 
-    def build_centerline(self, start_xyz, goal_xyz, ds=5.0, smooth_cm=60.0):
-        """床の上を start から goal まで歩く経路を求め、中心線にする。
+    def _walk_graph(self):
+        """床の上を歩くグラフ。戻り値: (各ノードの座標, 中央寄りを好むコストの
+        グラフ, 長さだけのグラフ)。
 
-        壁から離れるほど安いコストで最短経路を探す(コーナーの内側に
-        張り付かず、通路の中央寄りを通るように)。経路は移動平均で
-        なめらかにし、弧長 ds ごとに resample する。
+        ノードは床の格子のうち腰の高さで壁から WALK_CLEAR 以上離れた所。
+        隣接は段差 MAX_STEP 以下。中心線用のコストは壁から離れるほど安く
+        (通路の中央寄りを通るように)、出発点・目的地の提案には長さだけを使う。
         """
+        if getattr(self, "_graph_cache", None) is not None:
+            return self._graph_cache
         h = self.h
         nodes = [(a, b, z) for (a, b), zs in self.floors.items() for z in zs]
         xyz = np.array([(self.lo[0] + a * h, self.lo[1] + b * h, z) for a, b, z in nodes])
@@ -341,7 +380,7 @@ class ScanSpace:
         # 同じ高さの床が要る)が段ごとに2列できるので、すぐ隣だけだと
         # 段の上り下りでつながらない
         reach = range(-3, 4)
-        rows, cols, w = [], [], []
+        rows, cols, w, plain = [], [], [], []
         for n, (a, b, z) in enumerate(nodes):
             for da in reach:
                 for db in reach:
@@ -355,7 +394,57 @@ class ScanSpace:
                             rows.append(n)
                             cols.append(m)
                             w.append(length * (1.0 + (40.0 / c) ** 2))
-        graph = coo_matrix((w, (rows, cols)), shape=(len(nodes), len(nodes))).tocsr()
+                            plain.append(length)
+        shape = (len(nodes), len(nodes))
+        graph = coo_matrix((w, (rows, cols)), shape=shape).tocsr()
+        lengths = coo_matrix((plain, (rows, cols)), shape=shape).tocsr()
+        self._graph_cache = (xyz, graph, lengths)
+        self._graph_clr = clr
+        return self._graph_cache
+
+    def propose_endpoints(self):
+        """出発点・目的地の候補: 床の上を歩いて一番遠い2点(低い方を出発点)。
+
+        一度ある点から一番遠い点 A を求め、A から一番遠い点 B を求める
+        (グラフの直径の定番の近似)。玄関と一番奥の部屋がこれに当たることが
+        多い。部屋が複数ある家では、ユーザーが候補から選ぶ前提の「既定値」。
+        塗りつぶしの起点とつながっている床だけを対象にする。
+        戻り値: (出発点の座標, 目的地の座標, 2点間の歩く距離cm)
+        """
+        xyz, _, lengths = self._walk_graph()
+        if len(xyz) < 2:
+            raise ValueError("歩ける床が見つからない")
+        # 一番広くつながった床のかたまりから始める
+        from scipy.sparse.csgraph import connected_components
+        _, lab = connected_components(lengths, directed=False)
+        big = np.bincount(lab).argmax()
+        first = int(np.flatnonzero(lab == big)[0])
+        d0 = dijkstra(lengths, indices=first)
+        a = int(np.argmax(np.where(np.isfinite(d0), d0, -1)))
+        da = dijkstra(lengths, indices=a)
+        b = int(np.argmax(np.where(np.isfinite(da), da, -1)))
+        # 一番遠い点は通路の隅(角)になりやすく、中心線の端が壁に寄る。
+        # 近く(ENDPOINT_PULL 以内)で壁から一番離れた所(通路の中央)に寄せる
+        clr = self._graph_clr
+
+        def centered(i):
+            near = np.flatnonzero(np.linalg.norm(xyz - xyz[i], axis=1) <= ENDPOINT_PULL)
+            near = near[lab[near] == big]
+            return xyz[near[np.argmax(clr[near])]]
+
+        pa, pb = centered(a), centered(b)
+        if pb[2] < pa[2]:
+            pa, pb = pb, pa
+        return pa, pb, float(da[b])
+
+    def build_centerline(self, start_xyz, goal_xyz, ds=5.0, smooth_cm=60.0):
+        """床の上を start から goal まで歩く経路を求め、中心線にする。
+
+        壁から離れるほど安いコストで最短経路を探す(コーナーの内側に
+        張り付かず、通路の中央寄りを通るように)。経路は移動平均で
+        なめらかにし、弧長 ds ごとに resample する。
+        """
+        xyz, graph, _ = self._walk_graph()
 
         def nearest(p):
             p = np.asarray(p, dtype=float)

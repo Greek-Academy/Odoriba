@@ -9,6 +9,7 @@
     (実スキャンは十万面を超えるので、全部描くとブラウザが重くなる)
 
     python scan_viewer.py --route                     # 検証用の合成経路(route_env)で
+    python scan_viewer.py <mesh.obj>                  # 出発点・目的地は自動で提案
     python scan_viewer.py <mesh.obj> --start X Y Z --goal X Y Z [--seed X Y Z]
 
 出力のHTMLは plotly.js を埋め込むので、ファイル1つでオフラインでも開ける。
@@ -133,10 +134,15 @@ def main():
     parser.add_argument("--seed", type=float, nargs=3, metavar=("X", "Y", "Z"),
                         help="自由空間の中の1点(既定は出発点の床から1m上)")
     parser.add_argument("--carriers", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
+                        help=f"家具の寸法(cm、長辺・短辺・高さ)。既定は {L.FURN_L:.0f} "
+                             f"{L.FURN_W:.0f} {L.FURN_H:.0f}")
     parser.add_argument("--rrt", action="store_true",
                         help="RRT探索も回す(遅い。既定は掃引だけ)")
     parser.add_argument("--out", default="scan_viewer.html")
     args = parser.parse_args()
+    if args.furniture:
+        L.FURN_L, L.FURN_W, L.FURN_H = sorted(args.furniture[:2], reverse=True) +             [args.furniture[2]]
 
     import scan_space as SS
     if args.route:
@@ -147,14 +153,24 @@ def main():
         start, goal = R.START_XYZ, R.GOAL_XYZ
         seed = (R.HALL_W / 2, 40.0, 100.0)
     else:
-        if not (args.mesh and args.start and args.goal):
-            parser.error("mesh と --start / --goal を指定する(または --route)")
+        if not args.mesh:
+            parser.error("mesh を指定する(または --route)")
         import scan_demo as SD
         mesh, _ = SD.load_scan_zup(args.mesh)
         start, goal = args.start, args.goal
-        seed = args.seed or (start[0], start[1], start[2] + 100.0)
+        if args.seed:
+            seed = args.seed
+        elif start:
+            seed = (start[0], start[1], start[2] + 100.0)
+        else:
+            seed = SS.auto_seed(mesh)
 
     space = SS.ScanSpace(mesh, seed)
+    if start is None or goal is None:
+        # 出発点・目的地の指定がなければ、床の上を歩いて一番遠い2点を使う
+        start, goal, walk = space.propose_endpoints()
+        print(f"出発点・目的地を自動で提案: {np.round(start, 0).tolist()} -> "
+              f"{np.round(goal, 0).tolist()} (歩いて{walk:.0f}cm)")
     space.build_centerline(start, goal)
     result = SP.judge(space, num_carriers=args.carriers, rrt=args.rrt)
     render_html(space, mesh, result, args.out, num_carriers=args.carriers)
