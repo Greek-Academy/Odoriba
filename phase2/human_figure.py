@@ -262,6 +262,12 @@ def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
 
 
 def body_clearance(parts, clearance_fn):
-    """body_partsの各部位の余裕(cm)の最小値。clearance_fnは点群を
-    受け取り、その中で最悪の符号付き距離を返す関数(環境ごとに差し替える)。"""
-    return min(clearance_fn(pts) - r for pts, r in parts)
+    """body_partsの各部位の余裕(cm)の最小値。
+
+    clearance_fnは点群を受け取り、各点の符号付き距離の配列を返す関数
+    (環境ごとに差し替える)。全部位の点をまとめて1回で呼ぶ(呼び出し
+    回数が判定の速度を決めるため)。複数人分のpartsを連結して渡してもよい。
+    """
+    pts = np.vstack([pts for pts, _ in parts])
+    radii = np.concatenate([np.full(len(pts), r) for pts, r in parts])
+    return float(np.min(np.asarray(clearance_fn(pts)) - radii))
