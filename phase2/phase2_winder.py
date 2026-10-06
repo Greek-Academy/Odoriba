@@ -180,10 +180,13 @@ def winder_index(x, y):
     return min(max(k, 1), N_WINDERS)
 
 
-def floor_z(x, y):
+def floor_z(x, y, z_hint=None):
     """(x, y) の真下の歩行面の高さ。歩ける場所でなければNone。
 
     可搬性オラクル(L.state_valid等)には floor_fn=floor_z として渡す。
+
+    z_hint(高さのヒント)はスキャン空間の床(scan_space)と呼び出し方を
+    揃えるための引数で、ここでは床が重ならないので使わない。
     """
     if 0.0 <= x <= STAIR_WIDTH and 0.0 <= y <= LAND_Y1:
         if y < FL1_Y0:

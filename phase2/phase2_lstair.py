@@ -137,10 +137,13 @@ def build_lstairs():
     return outer, obstacles
 
 
-def floor_z(x, y):
+def floor_z(x, y, z_hint=None):
     """(x, y) の真下の歩行面の高さ。歩ける場所でなければNone。
 
     運搬者オラクル(足元の床)とサンプラー(誘導高さ)の両方で使う。
+
+    z_hint(高さのヒント)はスキャン空間の床(scan_space)と呼び出し方を
+    揃えるための引数で、ここでは床が重ならないので使わない。
     """
     if 0.0 <= x <= STAIR_WIDTH and 0.0 <= y <= LAND_Y1:
         if y < FL1_Y0:
@@ -254,9 +257,22 @@ def furniture_points(pos, quat):
     return (local @ R.T) + np.asarray(pos)
 
 
+def env_clearance_points(pts, outer, obstacles):
+    """環境に対する各点の符号付き余裕(cm)の配列。
+
+    outer が clearance_points を持つ環境(スキャン空間 scan_space.ScanSpace)なら
+    それで測り、そうでなければ直方体の環境(外枠の合併 - 障害物)として測る。
+    オラクル・掃引・RRTは outer/obstacles をここに渡すだけなので、スキャン
+    空間を outer に渡せば(obstacles は None)そのまま同じ判定が動く。
+    """
+    if hasattr(outer, "clearance_points"):
+        return outer.clearance_points(pts)
+    return p.clearance_points_3d(pts, outer, obstacles)
+
+
 def furniture_clearance(pos, quat, outer, obstacles):
     """この姿勢での家具単体(運搬者なし)のクリアランス(cm)。"""
-    return p.shape_clearance_3d(furniture_points(pos, quat), outer, obstacles)
+    return float(np.min(env_clearance_points(furniture_points(pos, quat), outer, obstacles)))
 
 
 # 運搬者の胴体円柱: 膝下(LEG_CLEAR)から頭頂まで。ローカル点は使い回す。
@@ -426,7 +442,8 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None
     signs = (-1.0,) if num_carriers == 1 else (1.0, -1.0)
     for sign in signs:
         grip = pos + R @ np.array([sign * (hl + p.CARRY_ARM), side_offset, 0.0])
-        fz = floor_fn(grip[0], grip[1])
+        # 把持点の高さをヒントに渡す(床が上下に重なる所で正しい段を選ぶため)
+        fz = floor_fn(grip[0], grip[1], grip[2])
         if fz is None:
             return None
         hand = grip[2] - fz
@@ -463,7 +480,7 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
         if ORACLE_TERMS["body"]:
             terms.append(carrier_body_clearance(
                 pos, quat, off, placed,
-                lambda pts: p.clearance_points_3d(pts, outer, obstacles)))
+                lambda pts: env_clearance_points(pts, outer, obstacles)))
         cand = min(terms)
         if cand > best:
             best = cand
@@ -507,7 +524,7 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
         if placed is None:
             continue
         body = carrier_body_clearance(pos, quat, off, placed,
-                                      lambda pts: p.clearance_points_3d(pts, outer, obstacles))
+                                      lambda pts: env_clearance_points(pts, outer, obstacles))
         reach = min(m for _, m in placed)
         if min(body, reach) > best:
             best = min(body, reach)
