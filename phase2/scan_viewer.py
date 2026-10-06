@@ -96,9 +96,13 @@ def _scene_traces(space, mesh, bottleneck, with_human, num_carriers, crop_r):
     return traces
 
 
-def render_html(space, mesh, result, out_path, num_carriers=2, crop_r=250.0, title=None):
+def render_html(space, mesh, result, out_path, num_carriers=2, crop_r=250.0, title=None,
+                include_plotlyjs=True):
     """scan_plan.judge の結果(bottleneck / bottleneck_furniture_only と掃引の
-    profile を含む dict)を、左=家具だけ・右=運搬者ありの3Dで書き出す。"""
+    profile を含む dict)を、左=家具だけ・右=運搬者ありの3Dで書き出す。
+
+    include_plotlyjs は plotly の write_html にそのまま渡す(既定は埋め込み。
+    ローカルサーバーから配信するときは "/plotly.min.js" のようにURLを渡す)。"""
     cases = (("bottleneck_furniture_only", False, "家具だけ"),
              ("bottleneck", True, f"{num_carriers}人で運ぶ"))
     titles = []
@@ -121,7 +125,7 @@ def render_html(space, mesh, result, out_path, num_carriers=2, crop_r=250.0, tit
                       title=dict(text=title or "Odoriba: スキャンした空間での判定"
                                  " -- 赤=足りない所 / 印=当たった点(ドラッグで回転)", x=0.5),
                       margin=dict(l=0, r=0, t=80, b=0))
-    fig.write_html(out_path, include_plotlyjs=True)
+    fig.write_html(out_path, include_plotlyjs=include_plotlyjs)
     print(f"saved viewer to {out_path}")
 
 
