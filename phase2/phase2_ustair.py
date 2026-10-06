@@ -144,10 +144,13 @@ def build_ustairs():
     return outer, obstacles
 
 
-def floor_z(x, y):
+def floor_z(x, y, z_hint=None):
     """(x, y) の真下の歩行面の高さ。歩ける場所でなければNone。
 
     可搬性オラクル(L.state_valid等)には floor_fn=floor_z として渡す。
+
+    z_hint(高さのヒント)はスキャン空間の床(scan_space)と呼び出し方を
+    揃えるための引数で、ここでは床が重ならないので使わない。
     """
     if FL1_Y1 <= y <= LAND_Y1 and 0.0 <= x <= X_R1:
         return LAND_Z
