@@ -29,7 +29,24 @@ import trimesh
 
 
 def load_mesh(path):
-    """OBJ/PLYを1つのTrimeshとして読む(Sceneなら結合する)。"""
+    """OBJ/PLYを1つのTrimeshとして読む(Sceneなら結合する)。
+
+    Scaniverse の書き出しの zip(中に OBJ・MTL・JPG)をそのまま渡してもよい。
+    中の最初の .obj/.ply をメモリ上で読む(展開してファイルを作らない)。
+    """
+    if str(path).lower().endswith(".zip"):
+        import io
+        import zipfile
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.lower().endswith((".obj", ".ply"))]
+            if not names:
+                raise ValueError(f"zipの中にOBJ/PLYがない: {path}")
+            data = z.read(names[0])
+        m = trimesh.load(io.BytesIO(data), file_type=names[0].rsplit(".", 1)[1].lower(),
+                         force="mesh")
+        if not isinstance(m, trimesh.Trimesh):
+            raise ValueError(f"メッシュとして読めなかった: {path}")
+        return m
     m = trimesh.load(path, force="mesh")
     if not isinstance(m, trimesh.Trimesh):
         raise ValueError(f"メッシュとして読めなかった: {path}")
