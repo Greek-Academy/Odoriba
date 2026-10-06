@@ -229,7 +229,8 @@ def render_png(u, l, out_path):
     fig.text(0.02, 0.905,
              f"階段 幅{st['width']:.0f}cm・{st['n_steps1']}+{st['n_steps2']}段 / "
              f"家具(タンス) {fu['L']:.0f}×{fu['W']:.0f}×{fu['H']:.0f}cm / "
-             f"運ぶ人は直径{2 * L.p.HUMAN_R:.0f}cmの円柱で近似、家具の傾きは"
+             f"運ぶ人は肩幅{u['meta']['carrier'].get('shoulder_width', 40):.0f}cmの人型で判定"
+             "(図の円は立ち位置)、家具の傾きは"
              f"{u['meta']['carrier']['max_tilt_deg']:.0f}度まで  "
              "(緑=出発時の姿勢、青=通った跡、橙=運ぶ人、赤=詰まる姿勢)",
              fontsize=10.5, color="#444444")
