@@ -637,27 +637,32 @@ def horizontal_clearance_points(points, outer, obstacles):
         だけの接触も、z=上面ちょうどなので除外される)
       - 外枠(合併)は、zが範囲内の直方体のxy矩形の「内側の余裕」の最大値
 
-    build_lstairsの環境がすべて軸平行の直方体(aabb)であることを
-    前提にした実装(回転した直方体を混ぜる場合は要拡張)。
+    直方体は軸平行でも、鉛直軸(z)まわりに回転していてもよい(回り階段の
+    扇形の段を回転した直方体で組むため)。点を各直方体のローカル座標に
+    移してから同じ計算をする。z軸自体が傾いた直方体は「水平」の意味が
+    崩れるので受け付けない。
     """
     eps = 1e-6
-    worst = np.inf
-    for x, y, z in np.asarray(points):
-        inner = -np.inf
-        for c, _, h in outer:
-            if abs(z - c[2]) <= h[2]:
-                m = min(x - (c[0] - h[0]), (c[0] + h[0]) - x,
-                        y - (c[1] - h[1]), (c[1] + h[1]) - y)
-                inner = max(inner, m)
-        v = inner
-        for c, _, h in obstacles:
-            if abs(z - c[2]) < h[2] - eps:
-                qx = max((c[0] - h[0]) - x, x - (c[0] + h[0]))
-                qy = max((c[1] - h[1]) - y, y - (c[1] + h[1]))
-                d = float(np.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0))
-                v = min(v, d)
-        worst = min(worst, v)
-    return float(worst)
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+
+    def local(c, r):
+        if not np.allclose(r[:, 2], (0.0, 0.0, 1.0)):
+            raise ValueError("horizontal_clearance_points: z軸まわり以外に回転した直方体は未対応")
+        return (pts - c) @ r   # 各行 = R^T (p - c)
+
+    inner = np.full(len(pts), -np.inf)
+    for c, r, h in outer:
+        q = local(c, r)
+        m = np.minimum(h[0] - np.abs(q[:, 0]), h[1] - np.abs(q[:, 1]))
+        inner = np.where(np.abs(q[:, 2]) <= h[2], np.maximum(inner, m), inner)
+    v = inner
+    for c, r, h in obstacles:
+        q = local(c, r)
+        qx = np.abs(q[:, 0]) - h[0]
+        qy = np.abs(q[:, 1]) - h[1]
+        d = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0)) + np.minimum(np.maximum(qx, qy), 0.0)
+        v = np.where(np.abs(q[:, 2]) < h[2] - eps, np.minimum(v, d), v)
+    return float(np.min(v))
 
 
 def path_min_horizontal_clearance(path, outer, obstacles):
