@@ -23,6 +23,12 @@
   3. 中心線  -- 床の上を出発点から目的地まで歩く経路を、壁から離れる
      ほど安いコストで探し、なめらかにして弧長sの関数にする
 
+壁・天井の撮れていない部分が大きいスキャン(穴が半径 leak_r を超える)では、
+塗りつぶしが外へ漏れてしまう。confine_to_floor=True(既定)では、撮れた床
+(上向きの面)の真上 FLOOR_SPACE_H までだけを空間とみなし、その範囲の境目を
+壁として扱う。撮れていない床の上(吹き抜けや、撮れなかった2階の床など)は
+空間に含まれないので、そこを通る判定はできない(撮り直しが要る)。
+
 ScanSpace は phase2_lstair のオラクル(carriable_clearance_lstair など)に
 `outer` の代わりとして渡せる(obstacles は None)。オラクルは
 clearance_points を持つ環境ならそれで距離を測る(env_clearance_points)。
@@ -42,6 +48,32 @@ HEADROOM = 150.0       # 床とみなすのに必要な頭上の余裕
 MAX_STEP = 25.0        # 中心線で1歩に越えられる段差
 WALK_CLEAR = 18.0      # 中心線を引く床の、腰の高さでの壁までの最小余裕
 FLOOR_TOL = 5.0        # 高さのヒントより少し上の床まで許す(ヒントの誤差分)
+# 撮れた床の範囲で空間を区切る(confine_to_floor)ときの寸法
+# 床からこの高さまでを空間とみなす(天井が撮れていない所の上限)。家具を傾けて
+# 持ち上げると上端は床から約3mに達し、階段の吹き抜けは天井が高いので、
+# 普通の天井(約2.4m)より十分高くしておく。天井が撮れていればそちらが効く
+FLOOR_SPACE_H = 350.0
+FLOOR_CLOSE = 10.0     # この幅以下の床の撮りこぼしは埋める
+FLOOR_PAD = 6.0        # 床の範囲をこれだけ外へ広げる(実際の壁がある所では壁が効くように)
+
+
+def _floor_facing_z(mesh):
+    """各面の法線のz成分を「床なら正」になる向きにそろえて返す。
+
+    スキャン(Scaniverseなど)の面は撮影者の側=自由空間の側を向くので、床の
+    法線は上向き。一方、直方体からブーリアンで作った合成メッシュは自由空間の
+    外側を向くので、床の法線は下向き(上向きは天井)になる。一番低い高さ帯
+    (床があるはずの所)で上向き・下向きの水平な面の面積を比べ、下向きが
+    多ければ向きを反転して扱う。
+    """
+    nz = mesh.face_normals[:, 2]
+    zc = mesh.triangles_center[:, 2]
+    z0, z1 = mesh.bounds[0][2], mesh.bounds[1][2]
+    low = zc < z0 + 0.1 * (z1 - z0)
+    area = mesh.area_faces
+    up = area[low & (nz > 0.9)].sum()
+    down = area[low & (nz < -0.9)].sum()
+    return -nz if down > up else nz
 
 
 class ScanSpace:
@@ -52,7 +84,7 @@ class ScanSpace:
     """
 
     def __init__(self, mesh, start_xyz, voxel=VOXEL, leak_r=LEAK_R,
-                 sample_spacing=SAMPLE_SPACING, seed=0):
+                 sample_spacing=SAMPLE_SPACING, seed=0, confine_to_floor=True):
         self.h = float(voxel)
         self.leak_r = float(leak_r)
         h = self.h
@@ -62,7 +94,7 @@ class ScanSpace:
 
         # ---- 1. 表面の点を格子に割り当てる ----
         n_samples = int(mesh.area / sample_spacing ** 2)
-        pts, _ = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
+        pts, face_idx = trimesh.sample.sample_surface(mesh, n_samples, seed=seed)
         vox = np.floor((pts - self.lo) / h + 0.5).astype(np.int64)
         lin = np.ravel_multi_index(vox.T, self.shape)
         # 各表面ボクセルの代表点 = 中心に一番近いサンプル点
@@ -76,21 +108,27 @@ class ScanSpace:
         surf = np.zeros(self.shape, dtype=bool)
         surf.flat[surf_lin] = True
 
-        # ---- 2. 符号なし距離: 一番近い表面ボクセルの代表点までの距離 ----
-        # 距離変換が返すのは「一番近い表面ボクセル」まで。そのボクセルの
-        # 代表点(実際の面上の点)までの距離に置き換えて、格子の粗さによる
-        # 誤差を小さくする。メモリを抑えるため x のスライスごとに処理する。
-        _, ind = nd.distance_transform_edt(~surf, return_indices=True)
-        rep_of = np.full(int(np.prod(self.shape)), -1, dtype=np.int32)
-        rep_of[surf_lin] = np.arange(len(surf_lin), dtype=np.int32)
-        unsigned = np.empty(self.shape, dtype=np.float32)
-        yy, zz = np.meshgrid(np.arange(self.shape[1]), np.arange(self.shape[2]), indexing="ij")
-        for i in range(self.shape[0]):
-            near = np.ravel_multi_index((ind[0, i], ind[1, i], ind[2, i]), self.shape)
-            q = rep[rep_of[near]]
-            c = np.stack([self.lo[0] + i * h + 0 * yy, self.lo[1] + yy * h,
-                          self.lo[2] + zz * h], axis=-1)
-            unsigned[i] = np.linalg.norm(c - q, axis=-1)
+        # ---- 1b. 撮れた床の範囲で空間を区切る ----
+        # 範囲の境目のボクセルを「面」に加える(代表点はボクセルの中心)。
+        # 塗りつぶしは境目を壁と同じに扱う。距離は塗りつぶしの後で、自由空間に
+        # 接する境目だけを残して計算し直す(床の下・壁の裏にある境目まで面に
+        # すると、段や壁へのめり込みの深さを浅く見積もってしまうため)。
+        self.allowed = None
+        real_lin, real_rep = surf_lin, rep
+        border = None
+        if confine_to_floor:
+            up = _floor_facing_z(mesh)[face_idx] > 0.9
+            allowed = self._floor_space(vox[up])
+            border = allowed & ~nd.binary_erosion(allowed) & ~surf
+            add = np.flatnonzero(border)
+            surf_lin = np.concatenate([surf_lin, add])
+            add_c = self.lo + np.column_stack(np.unravel_index(add, self.shape)) * h
+            rep = np.concatenate([rep, add_c.astype(np.float32)])
+            surf |= border
+            self.allowed = allowed
+
+        # ---- 2. 符号なし距離 ----
+        unsigned, ind, rep_of = self._unsigned_field(surf, surf_lin, rep)
 
         # ---- 3. 内側/外側: 出発点から塗りつぶす ----
         # (a) 壁から leak_r より離れた所だけをたどって出発点とつながる領域
@@ -139,11 +177,73 @@ class ScanSpace:
             import warnings
             warnings.warn(f"自由空間がスキャン範囲の端まで届いた: 半径{leak_r:.0f}cm以上の"
                           "穴(撮れていない壁)がある可能性が高い。判定は信用できない")
+        if border is not None:
+            # 自由空間に接する境目だけを面として残し、距離を計算し直す
+            keep = border & nd.binary_dilation(free)
+            k_lin = np.flatnonzero(keep)
+            surf2 = np.zeros(self.shape, dtype=bool)
+            surf2.flat[real_lin] = True
+            surf2.flat[k_lin] = True
+            k_c = self.lo + np.column_stack(np.unravel_index(k_lin, self.shape)) * h
+            unsigned, _, _ = self._unsigned_field(
+                surf2, np.concatenate([real_lin, k_lin]),
+                np.concatenate([real_rep, k_c.astype(np.float32)]), with_index=False)
         self.free = free
         self.phi = np.where(free, unsigned, -unsigned).astype(np.float32)
 
         self._build_floors()
         self.centerline = None
+
+    def _unsigned_field(self, surf, surf_lin, rep, with_index=True):
+        """各格子点から一番近い面までの距離(符号なし)。
+
+        距離変換が返すのは「一番近い表面ボクセル」まで。そのボクセルの
+        代表点(実際の面上の点)までの距離に置き換えて、格子の粗さによる
+        誤差を小さくする。メモリを抑えるため x のスライスごとに処理する。
+        戻り値: (unsigned, 一番近い表面ボクセルの添字 or None, 代表点の表引き)
+        """
+        h = self.h
+        _, ind = nd.distance_transform_edt(~surf, return_indices=True)
+        rep_of = np.full(int(np.prod(self.shape)), -1, dtype=np.int32)
+        rep_of[surf_lin] = np.arange(len(surf_lin), dtype=np.int32)
+        unsigned = np.empty(self.shape, dtype=np.float32)
+        yy, zz = np.meshgrid(np.arange(self.shape[1]), np.arange(self.shape[2]), indexing="ij")
+        for i in range(self.shape[0]):
+            near = np.ravel_multi_index((ind[0, i], ind[1, i], ind[2, i]), self.shape)
+            q = rep[rep_of[near]]
+            c = np.stack([self.lo[0] + i * h + 0 * yy, self.lo[1] + yy * h,
+                          self.lo[2] + zz * h], axis=-1)
+            unsigned[i] = np.linalg.norm(c - q, axis=-1)
+        if not with_index:
+            return unsigned, None, rep_of
+        return unsigned, ind, rep_of
+
+    def _floor_space(self, floor_vox):
+        """上向きの面のボクセルから、空間とみなす範囲(3Dの真偽値)を作る。
+
+        床のボクセルを水平方向に FLOOR_CLOSE + FLOOR_PAD 広げてから FLOOR_CLOSE
+        縮め(撮りこぼしを埋めて FLOOR_PAD だけ外へ広げる)、各床から上へ
+        FLOOR_SPACE_H、下へ格子2つ分を範囲にする。床が上下に重なる所
+        (階段の下と上など)は、それぞれの床からの範囲の和になる。
+        """
+        h = self.h
+        fv = np.zeros(self.shape, dtype=bool)
+        fv[tuple(np.asarray(floor_vox).T)] = True
+        xy = (h, h, 1e6)   # z方向の距離を極端に大きくして、水平方向だけで広げる
+        grown = nd.distance_transform_edt(~fv, sampling=xy) <= FLOOR_CLOSE + FLOOR_PAD
+        fv = nd.distance_transform_edt(grown, sampling=xy) > FLOOR_CLOSE
+        del grown
+        n_up = int(np.ceil(FLOOR_SPACE_H / h))
+        n_down = 2
+        K = self.shape[2]
+        c = np.zeros(self.shape[:2] + (K + 1,), dtype=np.int32)
+        np.cumsum(fv, axis=2, out=c[:, :, 1:])
+        k = np.arange(K)
+        # 高さ k が範囲内 <=> ある床の高さ k' について k' - n_down <= k <= k' + n_up
+        # <=> 区間 [k - n_up, k + n_down] に床がある(累積和で数える)
+        hi_i = np.minimum(k + n_down + 1, K)
+        lo_i = np.maximum(k - n_up, 0)
+        return (c[:, :, hi_i] - c[:, :, lo_i]) > 0
 
     # ---- 距離場の問い合わせ ----
 
