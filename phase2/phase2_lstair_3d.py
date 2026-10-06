@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 import geometry3d as g3
+import human_figure as hf
 import phase2_lstair as L
 
 N_FRAMES = 80          # 再生フレーム数(経路はこの数に間引く)
@@ -77,6 +78,20 @@ def cylinder_mesh(center, radius, half_h, color, opacity=1.0):
                      showlegend=False, hoverinfo="skip")
 
 
+def human_mesh(pose, color, opacity=1.0):
+    """運搬者1人を人の形(human_figure)で描く。poseは
+    L.carrier_poses_lstairが返すdictの1つ。1人を1トレースにまとめる
+    (フレームで差し替えるトレースの数を円柱のときと同じに保つため)。"""
+    v, t = hf.figure_mesh(pose["foot_xy"], pose["floor_z"], pose["facing"], pose["hands"])
+    # 全フレーム分をHTMLに埋め込むので、座標はfloat32にして軽くする
+    # (plotlyは配列をdtypeのままbase64で埋め込むため、f8の半分になる)
+    v = v.astype(np.float32)
+    return go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2],
+                     i=t[:, 0], j=t[:, 1], k=t[:, 2],
+                     color=color, opacity=opacity, flatshading=True,
+                     showlegend=False, hoverinfo="skip")
+
+
 def outer_wireframe(outer):
     """外枠(自由空間の輪郭)の直方体をワイヤーフレームで描く。
     面で塗ると中の家具が見えなくなるため線だけにする。"""
@@ -112,12 +127,8 @@ def furniture_state(pos, quat):
 
 
 def carrier_states(pos, quat, outer, obstacles, num_carriers, floor_fn=None):
-    """このフレームでの運搬者円柱(中心, 半径, 半高)のリスト。"""
-    out = []
-    for c in L.best_human_positions_lstair(pos, quat, num_carriers, outer, obstacles,
-                                           floor_fn):
-        out.append((np.asarray(c), L.p.HUMAN_R, L._CARRIER_HALF_H))
-    return out
+    """このフレームでの運搬者の姿勢(human_meshに渡すdict)のリスト。"""
+    return L.carrier_poses_lstair(pos, quat, num_carriers, outer, obstacles, floor_fn)
 
 
 def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
@@ -165,8 +176,8 @@ def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
     fig.add_trace(box_mesh(p0, r0, h0, "#2c6fbb"), row=1, col=1)      # 左の家具
     p0, r0, h0 = furniture_state(*path_car[0])
     fig.add_trace(box_mesh(p0, r0, h0, "#2c6fbb"), row=1, col=2)      # 右の家具
-    for c, r, hh in carriers_car[0]:                                   # 右の運搬者
-        fig.add_trace(cylinder_mesh(c, r, hh, "#e07b39", opacity=0.85), row=1, col=2)
+    for pose in carriers_car[0]:                                       # 右の運搬者
+        fig.add_trace(human_mesh(pose, "#e07b39", opacity=0.85), row=1, col=2)
     dyn_idx = list(range(dyn_start, len(fig.data)))
 
     # ---- フレーム ----
@@ -178,9 +189,8 @@ def render_html(result, out_path, use_cdn=False, env=None, floor_fn=None,
         # 右は最終フレーム(=詰まった状態)で赤にする
         stuck = (not car["found"]) and k == N_FRAMES - 1
         data.append(box_mesh(p, r, h, "#c0392b" if stuck else "#2c6fbb"))
-        for c, rad, hh in carriers_car[k]:
-            data.append(cylinder_mesh(c, rad, hh,
-                                      "#c0392b" if stuck else "#e07b39", opacity=0.85))
+        for pose in carriers_car[k]:
+            data.append(human_mesh(pose, "#c0392b" if stuck else "#e07b39", opacity=0.85))
         frames.append(go.Frame(data=data, traces=dyn_idx, name=str(k)))
     fig.frames = frames
 
