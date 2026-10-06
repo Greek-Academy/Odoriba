@@ -508,6 +508,11 @@ if __name__ == "__main__":
             if bn["capacity_cm"] < 0:
                 print(f"  -> この位置では、どの姿勢でもあと{-bn['capacity_cm']:.1f}cm足りない"
                       "(姿勢グリッドの範囲で)")
+            if with_human:
+                bn["breakdown"] = L.clearance_breakdown(
+                    np.array(bn["pose"][0]), np.array(bn["pose"][1]),
+                    outer, obstacles, num_carriers, floor_fn=floor_z)
+                print("  " + L.format_breakdown(bn["breakdown"]))
             result[key] = bn
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)

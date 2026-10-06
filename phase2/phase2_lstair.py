@@ -401,8 +401,10 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
             continue
         terms = [bc]
         for center, reach_margin in placed:
-            terms.append(reach_margin)
-            terms.append(p.shape_clearance_3d(carrier_points(center), outer, obstacles))
+            if ORACLE_TERMS["reach"]:
+                terms.append(reach_margin)
+            if ORACLE_TERMS["body"]:
+                terms.append(p.shape_clearance_3d(carrier_points(center), outer, obstacles))
         cand = min(terms)
         if cand > best:
             best = cand
@@ -412,6 +414,63 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
 
 def with_tilt_violation(quat):
     return tilt_deg(quat) > MAX_TILT_DEG
+
+
+# 可搬性オラクルの項を個別に外すスイッチ。通常は全部True のまま使う。
+# 「どの仮定を外すと不足量が何cm変わるか」を測る感度分析(sensitivity.py)専用。
+# 傾き上限は項ではなく MAX_TILT_DEG の値そのものを変えて調べる。
+ORACLE_TERMS = {"reach": True, "body": True}
+
+# clearance_breakdownの項の日本語名(出力用)
+BREAKDOWN_LABELS = {
+    "furniture": "家具が壁・段に当たる",
+    "carrier_body": "運搬者の体が壁・段に当たる",
+    "reach": "手が届かない(持つ高さ)",
+    "no_floor": "運搬者の立つ床がない",
+    "tilt": "傾き上限を超える",
+}
+
+
+def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn=None):
+    """ある姿勢での可搬性オラクルの各項(cm)を名前付きで返す(説明・分析用)。
+
+    carriable_clearance_lstairは最小値しか返さず、家具が壁に当たった時点で
+    運搬者の項を評価しないため「なぜ通らないか」が分からない。ここでは
+    全項を評価して並べ、一番厳しい項の名前を limiting に入れる。
+    運搬者の項は、体と手の届く範囲の両方を含めて最良になる横位置で測る。
+    """
+    bd = {"furniture": float(furniture_clearance(pos, quat, outer, obstacles)),
+          "carrier_body": None, "reach": None,
+          "tilt_deg": tilt_deg(quat), "max_tilt_deg": float(MAX_TILT_DEG)}
+    best = -np.inf
+    for off in p.SIDE_OFFSETS:
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+        if placed is None:
+            continue
+        body = min(p.shape_clearance_3d(carrier_points(c), outer, obstacles) for c, _ in placed)
+        reach = min(m for _, m in placed)
+        if min(body, reach) > best:
+            best = min(body, reach)
+            bd["carrier_body"], bd["reach"] = float(body), float(reach)
+    if bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
+        bd["limiting"] = "tilt"
+    elif bd["carrier_body"] is None:
+        bd["limiting"] = "no_floor" if bd["furniture"] >= 0 else "furniture"
+    else:
+        bd["limiting"] = min(("furniture", "carrier_body", "reach"), key=lambda k: bd[k])
+    return bd
+
+
+def format_breakdown(bd):
+    """clearance_breakdownの結果を1行の日本語にする。"""
+    def cm(v):
+        return "-" if v is None else f"{v:+.1f}cm"
+    line = (f"内訳: 家具{cm(bd['furniture'])} / 運搬者の体{cm(bd['carrier_body'])} / "
+            f"手の届く範囲{cm(bd['reach'])} / 傾き{bd['tilt_deg']:.0f}度"
+            f"(上限{bd['max_tilt_deg']:.0f}) -> 決め手: {BREAKDOWN_LABELS[bd['limiting']]}")
+    if bd["max_tilt_deg"] - bd["tilt_deg"] < 0.5:
+        line += "(傾きが上限に張り付いている)"
+    return line
 
 
 def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
@@ -901,10 +960,14 @@ if __name__ == "__main__":
         if c_min < 0:
             print(f"  -> この位置では、傾き{MAX_TILT_DEG:.0f}度以内のどの姿勢でも"
                   f"あと{-c_min:.1f}cm足りない(姿勢グリッドの範囲で)")
+        bd = clearance_breakdown(np.array(pose_min[0]), np.array(pose_min[1]),
+                                 outer, obstacles, num_carriers)
+        print("  " + format_breakdown(bd))
         result["bottleneck"] = {
             "s": float(s_min), "capacity_cm": float(c_min),
             "xy": list(map(float, skeleton_xy(s_min))),
             "pose": pose_min,
+            "breakdown": bd,
             "profile": [[float(s), float(c)] for s, c, _ in sweep],
         }
 
