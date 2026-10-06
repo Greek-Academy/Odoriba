@@ -123,8 +123,13 @@ class ScanSpace:
     def clearance_points(self, pts):
         """各点の符号付き余裕(cm)。自由空間の内側なら正、壁の中・
         スキャン範囲の外なら負。格子からの三線形補間。"""
-        coords = ((np.asarray(pts, dtype=float) - self.lo) / self.h).T
-        return nd.map_coordinates(self.phi, coords, order=1, mode="constant", cval=-100.0)
+        # 格子の外の点は、格子の端の値から「はみ出した距離」を引く
+        # (一律の定数にすると、どれだけはみ出したかの比較ができなくなる)
+        g = (np.asarray(pts, dtype=float) - self.lo) / self.h
+        top = np.array(self.shape, dtype=float) - 1.0
+        gc = np.clip(g, 0.0, top)
+        out = np.linalg.norm(g - gc, axis=-1) * self.h
+        return nd.map_coordinates(self.phi, gc.T, order=1, mode="nearest") - out
 
     # ---- 床 ----
 
