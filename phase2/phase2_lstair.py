@@ -483,9 +483,17 @@ def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
     return furniture_clearance(pos, quat, outer, obstacles) >= 0
 
 
-def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
-                                floor_fn=None):
-    """描画専用: 最良の横位置での運搬者カプセル中心のリスト。
+# 描画用: 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
+HAND_HALF_SPREAD = 18.0
+
+
+def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
+                         floor_fn=None):
+    """描画専用: 最良の横位置で、運搬者を人の形で描くための姿勢のリスト。
+
+    1人ごとに dict(center=判定に使う円柱の中心, foot_xy=足元のxy,
+    floor_z=足元の床の高さ, facing=正面の向き(水平xy), hands=両手の目標点2つ)
+    を返す。手の目標点は家具の端面上(把持点の高さ)に置く。
 
     詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
     描きたいので、成立しない場合はside_offset=0の位置で代用する。
@@ -494,15 +502,44 @@ def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstac
                                         floor_fn)
     if off is None:
         off = 0.0
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    hl = FURN_L / 2
+    signs = (-1.0,) if (num_carriers or p.NUM_CARRIERS) == 1 else (1.0, -1.0)
     placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
     if placed is None:
         # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
-        R = g3.rotmat_from_quat(quat)
-        hl = FURN_L / 2
-        signs = (-1.0,) if (num_carriers or p.NUM_CARRIERS) == 1 else (1.0, -1.0)
-        return [np.asarray(pos) + R @ np.array([sg * (hl + p.CARRY_ARM), 0.0, 0.0])
-                for sg in signs]
-    return [center for center, _ in placed]
+        centers = [pos + R @ np.array([sg * (hl + p.CARRY_ARM), 0.0, 0.0]) for sg in signs]
+    else:
+        centers = [c for c, _ in placed]
+
+    hw = FURN_W / 2
+    poses = []
+    for sg, center in zip(signs, centers):
+        hands = [pos + R @ np.array([sg * hl, float(np.clip(off + d, -hw, hw)), 0.0])
+                 for d in (HAND_HALF_SPREAD, -HAND_HALF_SPREAD)]
+        # 正面は家具の中心の方向。家具が縦に立っていて真上/真下にある
+        # ときは、長軸の水平成分(の逆向き)で代用する
+        facing = (pos - center)[:2]
+        if np.linalg.norm(facing) < 1e-6:
+            facing = -sg * (R @ np.array([1.0, 0.0, 0.0]))[:2]
+        if np.linalg.norm(facing) < 1e-6:
+            facing = np.array([1.0, 0.0])
+        poses.append(dict(center=center, foot_xy=center[:2],
+                          floor_z=float(center[2] - _CARRIER_HALF_H - LEG_CLEAR),
+                          facing=facing, hands=hands))
+    return poses
+
+
+def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
+                                floor_fn=None):
+    """描画専用: 最良の横位置での運搬者カプセル中心のリスト。
+
+    詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
+    描きたいので、成立しない場合はside_offset=0の位置で代用する。
+    """
+    return [cp["center"] for cp in carrier_poses_lstair(pos, quat, num_carriers, outer,
+                                                        obstacles, floor_fn)]
 
 
 # ---- ボトルネック掃引 ----

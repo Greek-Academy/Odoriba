@@ -89,9 +89,9 @@ def _figure_json(outer, obstacles, pose_b, c_b, pose_h, c_h):
         fig.add_trace(V.box_mesh(*V.furniture_state(pos, quat),
                                  "#c0392b" if ng else "#2f4a5e"), row=1, col=col)
         if col == 2:
-            for cc, r, hh in V.carrier_states(pos, quat, outer, obstacles, 2):
-                fig.add_trace(V.cylinder_mesh(cc, r, hh, "#d9604f" if ng else "#b08d57",
-                                              opacity=0.85), row=1, col=col)
+            for pose in V.carrier_states(pos, quat, outer, obstacles, 2):
+                fig.add_trace(V.human_mesh(pose, "#d9604f" if ng else "#b08d57",
+                                           opacity=0.85), row=1, col=col)
     scene = dict(aspectmode="data", camera=dict(eye=dict(x=-1.3, y=-1.5, z=0.9)))
     fig.update_layout(scene=scene, scene2=scene, height=560,
                       paper_bgcolor="#fbfaf6", font=dict(color="#3d3b37"),

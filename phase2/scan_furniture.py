@@ -228,7 +228,7 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0, stuck=False):
 
     階段の各段(直方体)と、外枠の天井(半透明の面)を描く。天井も衝突判定に
     入っていることを見た目で示す。家具は実点群を経路に沿って動かし、
-    num_carriers>0なら運搬者(円柱)も描く。stuck=Trueなら詰まった経路として
+    num_carriers>0なら運搬者(人型)も描く。stuck=Trueなら詰まった経路として
     家具を赤で表示する。plotly.jsを埋め込みオフラインで開ける。
     """
     import plotly.graph_objects as go
@@ -255,10 +255,8 @@ def render_3d(furn, path, out_path, n_frames=60, num_carriers=0, stuck=False):
             x=wp[:, 0], y=wp[:, 1], z=wp[:, 2], mode="markers",
             marker=furn_marker, showlegend=False, hoverinfo="skip")]
         if num_carriers > 0:
-            for c in L.best_human_positions_lstair(pos, quat, num_carriers,
-                                                   outer, obstacles):
-                traces.append(v3.cylinder_mesh(np.asarray(c), L.p.HUMAN_R,
-                                               L._CARRIER_HALF_H, "#3a7d44", opacity=0.85))
+            for cp in L.carrier_poses_lstair(pos, quat, num_carriers, outer, obstacles):
+                traces.append(v3.human_mesh(cp, "#3a7d44", opacity=0.85))
         return traces
 
     try:
