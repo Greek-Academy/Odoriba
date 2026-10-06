@@ -510,6 +510,11 @@ if __name__ == "__main__":
                       "(姿勢グリッドの範囲で)")
                 for a, b, c in bn["blocked_zones"]:
                     print(f"     詰まる区間: 弧長{a:.0f}..{b:.0f}cm で最大{-c:.1f}cm不足")
+            if with_human:
+                bn["breakdown"] = L.clearance_breakdown(
+                    np.array(bn["pose"][0]), np.array(bn["pose"][1]),
+                    outer, obstacles, num_carriers, floor_fn=floor_z)
+                print("  " + L.format_breakdown(bn["breakdown"]))
             result[key] = bn
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
