@@ -49,6 +49,7 @@ MAX_STEP = 25.0        # 中心線で1歩に越えられる段差
 WALK_CLEAR = 18.0      # 中心線を引く床の、腰の高さでの壁までの最小余裕
 FLOOR_TOL = 5.0        # 高さのヒントより少し上の床まで許す(ヒントの誤差分)
 ENDPOINT_PULL = 60.0   # 提案した出発点・目的地を、この範囲で通路の中央へ寄せる
+BRIDGE_GAP = 30.0      # 床の撮りこぼし(ドアの敷居など)をこの幅まで橋渡しする
 # 撮れた床の範囲で空間を区切る(confine_to_floor)ときの寸法
 # 床からこの高さまでを空間とみなす(天井が撮れていない所の上限)。家具を傾けて
 # 持ち上げると上端は床から約3mに達し、階段の吹き抜けは天井が高いので、
@@ -396,11 +397,60 @@ class ScanSpace:
                             w.append(length * (1.0 + (40.0 / c) ** 2))
                             plain.append(length)
         shape = (len(nodes), len(nodes))
+        self._bridge(xyz, clr, rows, cols, w, plain)
         graph = coo_matrix((w, (rows, cols)), shape=shape).tocsr()
         lengths = coo_matrix((plain, (rows, cols)), shape=shape).tocsr()
         self._graph_cache = (xyz, graph, lengths)
         self._graph_clr = clr
         return self._graph_cache
+
+    def _bridge(self, xyz, clr, rows, cols, w, plain, max_pairs=40):
+        """床の撮りこぼし(ドアの敷居など)で途切れた床のかたまりどうしを
+        橋渡しする辺を rows/cols/w/plain に足す。
+
+        別のかたまりの床どうしで、水平に BRIDGE_GAP 以内・段差 MAX_STEP 以内、
+        かつ間の腰の高さ(床から100cm)が WALK_CLEAR 以上空いている所だけを
+        つなぐ。壁を挟んだ所は間の余裕が負になるのでつながらない。
+        かたまりの組ごとに近い順に max_pairs 組まで調べる。
+        """
+        from scipy.sparse.csgraph import connected_components
+        from scipy.spatial import cKDTree
+        n = len(xyz)
+        if n < 2:
+            return
+        base = coo_matrix((plain, (rows, cols)), shape=(n, n)).tocsr()
+        n_comp, lab = connected_components(base, directed=False)
+        if n_comp < 2:
+            return
+        sizes = np.bincount(lab)
+        comps = [c for c in np.argsort(-sizes) if sizes[c] >= 20]
+        trees = {c: (np.flatnonzero(lab == c),) for c in comps}
+        for c in comps:
+            idx = trees[c][0]
+            trees[c] = (idx, cKDTree(xyz[idx, :2]))
+        for i, ca in enumerate(comps):
+            ia, ta = trees[ca]
+            for cb in comps[i + 1:]:
+                ib, tb = trees[cb]
+                d, k = tb.query(xyz[ia, :2], distance_upper_bound=BRIDGE_GAP)
+                ok = np.isfinite(d)
+                if not ok.any():
+                    continue
+                order = np.argsort(d[ok])[:max_pairs]
+                for a, b in zip(ia[ok][order], ib[k[ok][order]]):
+                    dz = abs(xyz[a, 2] - xyz[b, 2])
+                    if dz > MAX_STEP:
+                        continue
+                    seg = np.linspace(xyz[a], xyz[b], 8) + np.array([0.0, 0.0, 100.0])
+                    c_min = float(np.min(self.clearance_points(seg)))
+                    if c_min < WALK_CLEAR:
+                        continue
+                    length = float(np.linalg.norm(xyz[a] - xyz[b]))
+                    for u, v in ((a, b), (b, a)):
+                        rows.append(int(u))
+                        cols.append(int(v))
+                        w.append(length * (1.0 + (40.0 / c_min) ** 2))
+                        plain.append(length)
 
     def propose_endpoints(self):
         """出発点・目的地の候補: 床の上を歩いて一番遠い2点(低い方を出発点)。
