@@ -299,14 +299,28 @@ def best_effort_path(tree):
 
 # ---- ボトルネック掃引 ----
 
-def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True):
+def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True,
+                   s_values=None, fine=False):
     """中心線上の各弧長sで、粗い姿勢グリッドの中で達成できる最良の
     クリアランス(cm)を返す: [(s, capacity_cm, best_pose), ...]。
     L.sweep_capacityの折り返し版(姿勢グリッドの考え方は同じ)。
 
     capacityが負の位置は「サンプルした姿勢のどれをとっても|capacity| cm
     足りない」ことを意味する(姿勢グリッドの解像度の範囲で)。
+
+    s_values を渡すとその弧長だけを掃引する。fine=True なら、一番狭い所の
+    近くを細かく掃引し直して姿勢も探し直す(phase2_lstair.fine_sweep)。
     """
+    if fine:
+        def clearance(pos, quat):
+            if with_human:
+                return L.carriable_clearance_lstair(np.asarray(pos), quat, outer, obstacles,
+                                                    num_carriers, floor_fn=floor_z)[0]
+            return L.furniture_clearance(pos, quat, outer, obstacles)
+        return L.fine_sweep(
+            lambda sv: sweep_capacity(outer, obstacles, num_carriers, ds, with_human,
+                                      s_values=sv),
+            clearance, skeleton_heading, ds)
     max_pitch = L.MAX_TILT_DEG if with_human else 90.0
     pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
     laterals = (-10.0, 0.0, 10.0)
@@ -316,7 +330,9 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True
     # 端に近すぎるsはモデル化した廊下の端からはみ出すだけなので掃引しない
     s_margin = L.FURN_L / 2 + L.p.CARRY_ARM + L.p.HUMAN_R + 10.0
     results = []
-    for s in np.arange(s_margin, S_TOTAL - s_margin + 1e-9, ds):
+    if s_values is None:
+        s_values = np.arange(s_margin, S_TOTAL - s_margin + 1e-9, ds)
+    for s in s_values:
         x0, y0 = skeleton_xy(s)
         in_corner = CORNER_S0 <= s <= CORNER_S1
         yaws = corner_yaws if in_corner else (skeleton_heading(s),)
