@@ -559,8 +559,13 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
                                       lambda pts: env_clearance_points(pts, outer, obstacles))
         selfc = carrier_furniture_clearance(pos, quat, off, placed)
         reach = min(m for _, m in placed)
-        if min(body, selfc, reach) > best:
-            best = min(body, selfc, reach)
+        # 横位置は、オラクルと同じく有効な項だけの最小値が最良になるものを選ぶ
+        score = min([v for v, on in ((body, ORACLE_TERMS["body"]),
+                                     (selfc, ORACLE_TERMS["self"]),
+                                     (reach, ORACLE_TERMS["reach"])) if on],
+                    default=np.inf)
+        if score > best:
+            best = score
             bd["carrier_body"], bd["carrier_self"] = float(body), float(selfc)
             bd["reach"] = float(reach)
     if bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
@@ -568,7 +573,10 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
     elif bd["carrier_body"] is None:
         bd["limiting"] = "no_floor" if bd["furniture"] >= 0 else "furniture"
     else:
-        bd["limiting"] = min(("furniture", "carrier_body", "carrier_self", "reach"),
+        # 感度分析で外した項(ORACLE_TERMS が False)は決め手の候補にしない
+        enabled = {"carrier_body": ORACLE_TERMS["body"],
+                   "carrier_self": ORACLE_TERMS["self"], "reach": ORACLE_TERMS["reach"]}
+        bd["limiting"] = min(["furniture"] + [k for k, on in enabled.items() if on],
                              key=lambda k: bd[k])
     return bd
 
