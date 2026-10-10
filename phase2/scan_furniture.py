@@ -153,10 +153,12 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1), num_carriers=0):
                 placed = L.place_humans_lstair(pos, quat, off, num_carriers)
                 if placed is None:
                     continue
+                # 体と家具の干渉は、スキャン家具の外接直方体(dims)で測る
                 if (all(reach >= 0 for _, reach in placed) and
                         L.carrier_body_clearance(
                             pos, quat, off, placed,
-                            lambda pts: p.clearance_points_3d(pts, outer, obstacles)) >= 0):
+                            lambda pts: p.clearance_points_3d(pts, outer, obstacles)) >= 0 and
+                        L.carrier_furniture_clearance(pos, quat, off, placed) >= 0):
                     return True
             return False
 

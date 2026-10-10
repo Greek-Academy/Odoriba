@@ -13,10 +13,14 @@ pitchの主張(人体の占有が失敗の主因)がどの条件で成り立つ�
   既定         傾き上限55度・体・手の届く範囲すべて有効
   傾き70度     傾き上限だけ70度に緩める
   傾き上限なし 傾き上限を90度にする(垂直に立ててよい)
-  体なし       運搬者の体の占有を無視(手の届く範囲・傾き上限は有効)
+  家具との干渉なし 運搬者の体と家具自身の干渉を無視(干渉の項を足す前の既定)
+  傾き上限なし・家具との干渉なし 同じく、傾き上限90度で
+  体なし       運搬者の体の占有を無視(壁との干渉・家具との干渉の両方。
+               手の届く範囲・傾き上限は有効)
   届く範囲なし 持つ高さの制約を無視
   体・届く範囲なし 傾き上限55度だけ残す
   傾き自由・届く範囲なし 運搬者の体だけ残す(体の占有が単独で効くかを見る)
+  傾き自由・届く範囲なし・家具との干渉なし 体のうち壁・段との干渉だけ残す
   (円柱)が付く列 体の判定モデルを人型から従来の円柱に戻した同条件
               (体のモデルを変えた影響を同じ表で比べる)
 
@@ -36,17 +40,22 @@ import phase2_winder as W
 
 # (列名, 運搬者あり, 傾き上限, 有効にするオラクルの項, 体の判定モデル)
 CONDITIONS = [
-    ("家具単体", False, 90.0, {"reach": True, "body": True}, "humanoid"),
-    ("既定", True, 55.0, {"reach": True, "body": True}, "humanoid"),
-    ("傾き70度", True, 70.0, {"reach": True, "body": True}, "humanoid"),
-    ("傾き上限なし", True, 90.0, {"reach": True, "body": True}, "humanoid"),
-    ("体なし", True, 55.0, {"reach": True, "body": False}, "humanoid"),
-    ("届く範囲なし", True, 55.0, {"reach": False, "body": True}, "humanoid"),
-    ("体・届く範囲なし", True, 55.0, {"reach": False, "body": False}, "humanoid"),
-    ("傾き自由・届く範囲なし", True, 90.0, {"reach": False, "body": True}, "humanoid"),
-    ("既定(円柱)", True, 55.0, {"reach": True, "body": True}, "cylinder"),
-    ("傾き上限なし(円柱)", True, 90.0, {"reach": True, "body": True}, "cylinder"),
-    ("傾き自由・届く範囲なし(円柱)", True, 90.0, {"reach": False, "body": True}, "cylinder"),
+    ("家具単体", False, 90.0, {"reach": True, "body": True, "self": True}, "humanoid"),
+    ("既定", True, 55.0, {"reach": True, "body": True, "self": True}, "humanoid"),
+    ("傾き70度", True, 70.0, {"reach": True, "body": True, "self": True}, "humanoid"),
+    ("傾き上限なし", True, 90.0, {"reach": True, "body": True, "self": True}, "humanoid"),
+    ("家具との干渉なし", True, 55.0, {"reach": True, "body": True, "self": False}, "humanoid"),
+    ("傾き上限なし・家具との干渉なし", True, 90.0,
+     {"reach": True, "body": True, "self": False}, "humanoid"),
+    ("体なし", True, 55.0, {"reach": True, "body": False, "self": False}, "humanoid"),
+    ("届く範囲なし", True, 55.0, {"reach": False, "body": True, "self": True}, "humanoid"),
+    ("体・届く範囲なし", True, 55.0, {"reach": False, "body": False, "self": False}, "humanoid"),
+    ("傾き自由・届く範囲なし", True, 90.0, {"reach": False, "body": True, "self": True}, "humanoid"),
+    ("傾き自由・届く範囲なし・家具との干渉なし", True, 90.0,
+     {"reach": False, "body": True, "self": False}, "humanoid"),
+    ("既定(円柱)", True, 55.0, {"reach": True, "body": True, "self": True}, "cylinder"),
+    ("傾き上限なし(円柱)", True, 90.0, {"reach": True, "body": True, "self": True}, "cylinder"),
+    ("傾き自由・届く範囲なし(円柱)", True, 90.0, {"reach": False, "body": True, "self": True}, "cylinder"),
 ]
 
 # (名前, 環境を作る関数, 掃引関数, 歩行面関数)
