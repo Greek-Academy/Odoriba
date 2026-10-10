@@ -227,7 +227,7 @@ def _segment_points(a, b, ts):
     return [a + (b - a) * t for t in ts]
 
 
-def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
+def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear, with_arms=True):
     """衝突判定用の体を [(骨格の点群, 半径), ...] で返す。
 
     各部位を「骨格(点・線分・面)を半径rの球で掃いた形」で表す。
@@ -243,6 +243,9 @@ def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
       腕: 肩→肘→手首。手先は家具の端面に触れているので含めない
           (含めると家具自身の余裕を二重に数え、手の半径の分だけ
           家具より厳しくなってしまう)
+
+    with_arms=False は腕を除く。運搬者の体と家具自身の干渉を測るときに使う
+    (腕は家具を持つために家具に触れているので、干渉に数えない)。
     """
     sk = skeleton(foot_xy, floor_z, facing_xy, hands)
     at = sk["at"]
@@ -253,12 +256,15 @@ def body_parts(foot_xy, floor_z, facing_xy, hands, leg_clear):
     for hip in sk["hips"]:
         knee = hip - sk["z"] * (HIP_Z - leg_clear - LEG_R)
         legs += _segment_points(hip, knee, (0.0, 0.5, 1.0))
+    parts = [(np.array(torso), TORSO_HD), (sk["head"][None, :], HEAD_R),
+             (np.array(legs), LEG_R)]
+    if not with_arms:
+        return parts
     arms = []
     for shoulder, elbow, hand in sk["arms"]:
         arms += _segment_points(shoulder, elbow, (0.0, 0.5, 1.0))
         arms += _segment_points(elbow, hand, (0.4, 0.7, 0.85))
-    return [(np.array(torso), TORSO_HD), (sk["head"][None, :], HEAD_R),
-            (np.array(legs), LEG_R), (np.array(arms), ARM_R)]
+    return parts + [(np.array(arms), ARM_R)]
 
 
 def body_clearance(parts, clearance_fn):
