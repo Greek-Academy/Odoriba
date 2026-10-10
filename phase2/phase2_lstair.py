@@ -769,53 +769,72 @@ def refine_pose(pos, quat, clearance_fn, heading_deg, step_cm=5.0, step_deg=5.0,
     return float(best), (p_best.tolist(), q_best.tolist())
 
 
-def refine_sweep(sweep, clearance_fn, heading_fn, window_cm=10.0):
-    """掃引結果のうち、一番狭い所から window_cm 以内の位置だけ refine_pose で
-    細かく探し直した掃引結果を返す(同じ形のリスト)。
+def _lowest_positions(sweep, window_cm, max_n):
+    """掃引結果のうち、一番狭い所から window_cm 以内で、余裕の小さい順に
+    最大 max_n 個の弧長の集合。
 
-    一番狭い所だけを直すと、粗いグリッドでたまたま損をしていた2番目の
-    位置が実は一番狭い、という取りこぼしが出るので、近い値の位置も直す。
+    細かく掃引し直す位置を選ぶのに使う。余裕がほぼ一定の区間が長いと
+    window_cm 以内の位置が何十個にもなるので、数を max_n で抑える。
+    """
+    cand = sorted((c, s) for s, c, _ in sweep if np.isfinite(c))
+    if not cand:
+        return set()
+    worst = cand[0][0]
+    return {s for c, s in cand[:max_n] if c <= worst + window_cm}
+
+
+def refine_sweep(sweep, clearance_fn, heading_fn, max_n=40):
+    """掃引結果の一番狭い所を refine_pose で探し直し、探し直した結果が
+    一番狭い所でなくなったら、次に狭い所を探し直す。一番狭い所が探し直し
+    済みの位置になったら止める(同じ形のリストを返す)。
+
+    探し直すと余裕は増える一方なので、探し直していない位置が粗い値のまま
+    一番狭い所に残ると、それが結果になってしまう。逆に余裕がほぼ一定の
+    区間で近い値の位置を全部探し直すと、1条件に20分以上かかった。
+    この順番なら、結果に効く位置だけを探し直せる。max_n は探し直す位置の上限。
     heading_fn(s) は弧長sでの中心線の進行方向のヨー(度)。
     """
-    finite = [c for _, c, _ in sweep if np.isfinite(c)]
-    if not finite:
-        return list(sweep)
-    worst = min(finite)
-    out = []
-    for s, c, pose in sweep:
-        if np.isfinite(c) and c <= worst + window_cm:
-            c2, pose2 = refine_pose(pose[0], pose[1], clearance_fn, heading_fn(s))
-            if c2 > c:
-                c, pose = c2, pose2
-        out.append((s, c, pose))
+    out = list(sweep)
+    done = set()
+    for _ in range(max_n):
+        cand = [(c, k) for k, (_, c, _) in enumerate(out) if np.isfinite(c)]
+        if not cand:
+            break
+        _, k = min(cand)
+        if k in done:
+            break
+        s, c, pose = out[k]
+        c2, pose2 = refine_pose(pose[0], pose[1], clearance_fn, heading_fn(s))
+        if c2 > c:
+            out[k] = (s, c2, pose2)
+        done.add(k)
     return out
 
 
-def fine_sweep(sweep_fn, clearance_fn, heading_fn, ds, ds_fine=3.0, window_cm=10.0):
+def fine_sweep(sweep_fn, clearance_fn, heading_fn, ds, ds_fine=3.0, window_cm=10.0,
+               max_n=3):
     """粗い掃引のあと、一番狭い所の近くだけを細かく掃引し直して姿勢も探し直す。
 
     sweep_fn(s_values) は指定した弧長だけを掃引する関数(s_values=None なら
     いつもの刻みで全体)。粗い刻み(ds)の間に一番狭い所が隠れていることが
-    あるので(L字で ds=15cm と 5cm で値が約10cm違った)、一番狭い所から
-    window_cm 以内の各位置の前後 ds の範囲を ds_fine 刻みで足し、そのうえで
+    あるので(L字で ds=15cm と 5cm で値が約10cm違った)、一番狭い所に近い
+    max_n 個の位置の前後 ds の範囲を ds_fine 刻みで足し、そのうえで
     refine_sweep をかける。戻り値は弧長順の掃引結果(sweep_capacity と同じ形)。
     """
     coarse = sweep_fn(None)
-    finite = [c for _, c, _ in coarse if np.isfinite(c)]
-    if not finite:
+    targets = _lowest_positions(coarse, window_cm, max_n)
+    if not targets:
         return coarse
-    worst = min(finite)
     have = {round(s, 6) for s, _, _ in coarse}
     s_lo, s_hi = coarse[0][0], coarse[-1][0]
     extra = set()
-    for s, c, _ in coarse:
-        if np.isfinite(c) and c <= worst + window_cm:
-            for t in np.arange(s - ds + ds_fine, s + ds - 1e-9, ds_fine):
-                if s_lo <= t <= s_hi and round(t, 6) not in have:
-                    extra.add(round(float(t), 6))
+    for s in targets:
+        for t in np.arange(s - ds + ds_fine, s + ds - 1e-9, ds_fine):
+            if s_lo <= t <= s_hi and round(t, 6) not in have:
+                extra.add(round(float(t), 6))
     merged = sorted(coarse + (sweep_fn(sorted(extra)) if extra else []),
                     key=lambda r: r[0])
-    return refine_sweep(merged, clearance_fn, heading_fn, window_cm)
+    return refine_sweep(merged, clearance_fn, heading_fn)
 
 
 def skeleton_heading(s):
