@@ -343,6 +343,30 @@ def carrier_body_clearance(pos, quat, side_offset, placed, clearance_fn):
     return hf.body_clearance(parts, clearance_fn)
 
 
+def carrier_furniture_clearance(pos, quat, side_offset, placed):
+    """運搬者全員の体と家具自身の余裕(cm)の最小値。負なら体が家具に食い込む。
+
+    把持点は家具の端からCARRY_ARMだけ長軸方向に離した位置で固定なので、
+    家具を傾けると端の角が運搬者の頭上・胸元にかぶさり、体が家具の中に
+    入った「ありえない姿勢」が成立してしまっていた(壁との余裕しか見て
+    いなかったため)。腕は家具を持つために触れているので数えない。
+    家具は直方体(FURN_L x W x H)として測る。
+    """
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    half = np.array([FURN_L / 2, FURN_W / 2, FURN_H / 2])
+    if BODY_MODEL == "cylinder":
+        pts = np.vstack([carrier_points(c) for c, _ in placed])
+        return float(np.min(g3.obb_sdf_points(pts, pos, R, half)))
+    best = np.inf
+    for sign, (center, _) in zip(_carrier_signs(len(placed)), placed):
+        floor, facing, hands = _carrier_frame(pos, R, sign, side_offset, center)
+        for pts, r in hf.body_parts(center[:2], floor, facing, hands, LEG_CLEAR,
+                                    with_arms=False):
+            best = min(best, float(np.min(g3.obb_sdf_points(pts, pos, R, half))) - r)
+    return best
+
+
 def _pose(yaw_deg, pitch_deg, roll_deg=0.0):
     """ヨー(z)->ピッチ(長軸の仰角)->ロールの順に合成した姿勢。
 
@@ -481,6 +505,8 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
             terms.append(carrier_body_clearance(
                 pos, quat, off, placed,
                 lambda pts: env_clearance_points(pts, outer, obstacles)))
+        if ORACLE_TERMS["self"]:
+            terms.append(carrier_furniture_clearance(pos, quat, off, placed))
         cand = min(terms)
         if cand > best:
             best = cand
@@ -495,12 +521,14 @@ def with_tilt_violation(quat):
 # 可搬性オラクルの項を個別に外すスイッチ。通常は全部True のまま使う。
 # 「どの仮定を外すと不足量が何cm変わるか」を測る感度分析(sensitivity.py)専用。
 # 傾き上限は項ではなく MAX_TILT_DEG の値そのものを変えて調べる。
-ORACLE_TERMS = {"reach": True, "body": True}
+# "self" は運搬者の体と家具自身の干渉(carrier_furniture_clearance)。
+ORACLE_TERMS = {"reach": True, "body": True, "self": True}
 
 # clearance_breakdownの項の日本語名(出力用)
 BREAKDOWN_LABELS = {
     "furniture": "家具が壁・段に当たる",
     "carrier_body": "運搬者の体が壁・段に当たる",
+    "carrier_self": "運搬者の体が家具に食い込む",
     "reach": "手が届かない(持つ高さ)",
     "no_floor": "運搬者の立つ床がない",
     "tilt": "傾き上限を超える",
@@ -516,7 +544,7 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
     運搬者の項は、体と手の届く範囲の両方を含めて最良になる横位置で測る。
     """
     bd = {"furniture": float(furniture_clearance(pos, quat, outer, obstacles)),
-          "carrier_body": None, "reach": None,
+          "carrier_body": None, "carrier_self": None, "reach": None,
           "tilt_deg": tilt_deg(quat), "max_tilt_deg": float(MAX_TILT_DEG)}
     best = -np.inf
     for off in p.SIDE_OFFSETS:
@@ -525,16 +553,19 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
             continue
         body = carrier_body_clearance(pos, quat, off, placed,
                                       lambda pts: env_clearance_points(pts, outer, obstacles))
+        selfc = carrier_furniture_clearance(pos, quat, off, placed)
         reach = min(m for _, m in placed)
-        if min(body, reach) > best:
-            best = min(body, reach)
-            bd["carrier_body"], bd["reach"] = float(body), float(reach)
+        if min(body, selfc, reach) > best:
+            best = min(body, selfc, reach)
+            bd["carrier_body"], bd["carrier_self"] = float(body), float(selfc)
+            bd["reach"] = float(reach)
     if bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
         bd["limiting"] = "tilt"
     elif bd["carrier_body"] is None:
         bd["limiting"] = "no_floor" if bd["furniture"] >= 0 else "furniture"
     else:
-        bd["limiting"] = min(("furniture", "carrier_body", "reach"), key=lambda k: bd[k])
+        bd["limiting"] = min(("furniture", "carrier_body", "carrier_self", "reach"),
+                             key=lambda k: bd[k])
     return bd
 
 
@@ -543,6 +574,7 @@ def format_breakdown(bd):
     def cm(v):
         return "-" if v is None else f"{v:+.1f}cm"
     line = (f"内訳: 家具{cm(bd['furniture'])} / 運搬者の体{cm(bd['carrier_body'])} / "
+            f"体と家具{cm(bd.get('carrier_self'))} / "
             f"手の届く範囲{cm(bd['reach'])} / 傾き{bd['tilt_deg']:.0f}度"
             f"(上限{bd['max_tilt_deg']:.0f}) -> 決め手: {BREAKDOWN_LABELS[bd['limiting']]}")
     if bd["max_tilt_deg"] - bd["tilt_deg"] < 0.5:
