@@ -90,13 +90,27 @@ def pose_clearance(space, pos, quat, with_human, num_carriers=None):
     return L.furniture_clearance(pos, quat, space, None)
 
 
-def sweep_capacity(space, num_carriers=None, ds=15.0, with_human=True, max_pitch=None):
+def sweep_capacity(space, num_carriers=None, ds=15.0, with_human=True, max_pitch=None,
+                   s_values=None, fine=False):
     """中心線上の各弧長sで、粗い姿勢グリッドの中で達成できる最良の余裕(cm)。
     [(s, capacity_cm, best_pose), ...] を返す。phase2_lstair.sweep_capacity の
-    中心線版(姿勢グリッドの考え方は同じ)。"""
+    中心線版(姿勢グリッドの考え方は同じ)。
+
+    s_values を渡すとその弧長だけを掃引する。fine=True なら、一番狭い所の
+    近くを細かく掃引し直して姿勢も探し直す(phase2_lstair.fine_sweep)。
+    """
     cl = space.centerline
     if max_pitch is None:
         max_pitch = L.MAX_TILT_DEG if with_human else 90.0
+    if fine:
+        def clearance(pos, quat):
+            if L.tilt_deg(quat) > max_pitch + 1e-6:
+                return -np.inf
+            return pose_clearance(space, np.asarray(pos), quat, with_human, num_carriers)
+        return L.fine_sweep(
+            lambda sv: sweep_capacity(space, num_carriers, ds, with_human, max_pitch,
+                                      s_values=sv),
+            clearance, cl.heading_at, ds)
     pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
@@ -104,7 +118,9 @@ def sweep_capacity(space, num_carriers=None, ds=15.0, with_human=True, max_pitch
     # 範囲の外かもしれない所)にはみ出すだけなので掃引しない
     s_margin = L.FURN_L / 2 + p.CARRY_ARM + p.HUMAN_R + 10.0
     results = []
-    for s in np.arange(s_margin, cl.s_total - s_margin + 1e-9, ds):
+    if s_values is None:
+        s_values = np.arange(s_margin, cl.s_total - s_margin + 1e-9, ds)
+    for s in s_values:
         x0, y0 = cl.xy_at(s)
         heading = cl.heading_at(s)
         corner = cl.corner_at(s)
