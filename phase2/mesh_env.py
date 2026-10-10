@@ -112,7 +112,8 @@ class MeshEnv:
                 continue
             ok = (all(reach >= 0 for _, reach in placed) and
                   L.carrier_body_clearance(pos, quat, off, placed,
-                                           self.signed_clearance_points) >= 0)
+                                           self.signed_clearance_points) >= 0 and
+                  L.carrier_furniture_clearance(pos, quat, off, placed) >= 0)
             if ok:
                 return True
         return False
