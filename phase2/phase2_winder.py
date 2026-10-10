@@ -521,7 +521,7 @@ if __name__ == "__main__":
             print(f"\nボトルネック掃引({label}、中心線に沿って)...")
             t0 = time.time()
             bn = bottleneck_entry(sweep_capacity(outer, obstacles, num_carriers,
-                                                 with_human=with_human))
+                                                 with_human=with_human, fine=True))
             print(f"  最も狭い位置: {bn['where']} (弧長{bn['s']:.0f}cm), "
                   f"最良姿勢での余裕={bn['capacity_cm']:.1f}cm [{time.time() - t0:.0f}s]")
             if bn["capacity_cm"] < 0:

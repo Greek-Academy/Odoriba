@@ -134,7 +134,7 @@ def main():
         t0 = time.time()
         out = {}
         for wh in (False, True):
-            sw = SP.sweep_capacity(space, num_carriers=args.carriers, with_human=wh)
+            sw = SP.sweep_capacity(space, num_carriers=args.carriers, with_human=wh, fine=True)
             fin = [r for r in sw if np.isfinite(r[1])]
             s, c, pose = min(fin, key=lambda r: r[1])
             xyz, cp, part = SP.worst_contact(space, pose, wh, args.carriers)
