@@ -19,7 +19,7 @@ import measure_stairs as ms
 
 def _bottleneck(outer, obstacles, with_human, num_carriers):
     sweep = L.sweep_capacity(outer, obstacles, num_carriers=num_carriers,
-                             with_human=with_human)
+                             with_human=with_human, fine=True)
     finite = [(s, c) for s, c, _ in sweep if np.isfinite(c)]
     s_min, c_min = min(finite, key=lambda r: r[1])
     s_land0, s_land1 = L.FL1_Y1, L.S_CORNER + (L.FL2_X0 - L.CENTER)

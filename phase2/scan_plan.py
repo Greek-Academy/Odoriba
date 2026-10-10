@@ -242,7 +242,8 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
                 f"経路が短すぎて掃引できない: 中心線{cl.s_total:.0f}cmに対し、長さ"
                 f"{L.FURN_L:.0f}cmの家具と運搬者の列には{need:.0f}cm以上要る")
         for key, with_human in (("bottleneck_furniture_only", False), ("bottleneck", True)):
-            sw = sweep_capacity(space, num_carriers=num_carriers, with_human=with_human)
+            sw = sweep_capacity(space, num_carriers=num_carriers, with_human=with_human,
+                                fine=True)
             finite = [r for r in sw if np.isfinite(r[1])]
             if not finite:
                 raise ValueError(f"{key}: どの位置でも判定できなかった"

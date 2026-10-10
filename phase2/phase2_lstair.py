@@ -1129,7 +1129,7 @@ if __name__ == "__main__":
         # ボトルネックと同じ掃引を家具単体でも行う。
         print("\nボトルネック掃引(家具単体、中心線に沿って)...")
         t0 = time.time()
-        sweep = sweep_capacity(outer, obstacles, with_human=False)
+        sweep = sweep_capacity(outer, obstacles, with_human=False, fine=True)
         s_min, c_min, pose_min = min(sweep, key=lambda r: r[1])
         print(f"  最も狭い位置: 弧長 s={s_min:.0f}cm, 最良姿勢での余裕={c_min:.1f}cm "
               f"[{time.time() - t0:.0f}s]")
@@ -1219,7 +1219,7 @@ if __name__ == "__main__":
     if not args.skip_sweep:
         print("\nボトルネック掃引(運搬者あり、中心線に沿って)...")
         t0 = time.time()
-        sweep = sweep_capacity(outer, obstacles, num_carriers=num_carriers)
+        sweep = sweep_capacity(outer, obstacles, num_carriers=num_carriers, fine=True)
         finite = [(s, c, pose) for s, c, pose in sweep if np.isfinite(c)]
         s_min, c_min, pose_min = min(finite, key=lambda r: r[1])
         print(f"  最悪の位置: 弧長 s={s_min:.0f}cm (踊り場={S_CORNER - STAIR_WIDTH / 2:.0f}"

@@ -61,11 +61,11 @@ CONDITIONS = [
 # (名前, 環境を作る関数, 掃引関数, 歩行面関数)
 STAIRS = [
     ("L字", L.build_lstairs,
-     lambda o, ob, wh: L.sweep_capacity(o, ob, num_carriers=2, with_human=wh), None),
+     lambda o, ob, wh: L.sweep_capacity(o, ob, num_carriers=2, with_human=wh, fine=True), None),
     ("折り返し", U.build_ustairs,
-     lambda o, ob, wh: U.sweep_capacity(o, ob, num_carriers=2, with_human=wh), U.floor_z),
+     lambda o, ob, wh: U.sweep_capacity(o, ob, num_carriers=2, with_human=wh, fine=True), U.floor_z),
     ("回り", W.build_winder,
-     lambda o, ob, wh: W.sweep_capacity(o, ob, num_carriers=2, with_human=wh), W.floor_z),
+     lambda o, ob, wh: W.sweep_capacity(o, ob, num_carriers=2, with_human=wh, fine=True), W.floor_z),
 ]
 
 
