@@ -486,12 +486,16 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
         cm換算せず、-infで返す。「あと何cm」の対象は幾何の余裕だけ)
       - 手の届く範囲までの余裕(cm)もクリアランスの一項として混ぜる
         (届かない場合は負のcmとして「あとどれだけ低ければ持てたか」になる)
+
+    家具が壁に当たっていても運搬者の項まで評価する。以前は家具の余裕が
+    負ならその値をすぐ返していたため、家具が壁にちょうど触れている姿勢
+    (余裕 -0.0cm)が、運搬者の項では何十cmも足りなくても「ほぼ0cm」と
+    評価され、掃引の最良姿勢に選ばれていた。通る/通らないだけを知りたい
+    RRTの判定(state_valid)は、家具の余裕が負なら先に打ち切る。
     """
     if with_tilt_violation(quat):
         return -np.inf, None
     bc = furniture_clearance(pos, quat, outer, obstacles)
-    if bc < 0:
-        return bc, None
     best = -np.inf
     best_offset = None
     for off in p.SIDE_OFFSETS:
@@ -585,11 +589,13 @@ def format_breakdown(bd):
 def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
                 floor_fn=None):
     """このモジュール版のcollision_free(rrt_connectのvalidatorに渡す)。"""
+    if furniture_clearance(pos, quat, outer, obstacles) < 0:
+        return False
     if with_human:
         cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
                                            floor_fn)
         return cc >= 0
-    return furniture_clearance(pos, quat, outer, obstacles) >= 0
+    return True
 
 
 def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
