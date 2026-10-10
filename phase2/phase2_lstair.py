@@ -33,6 +33,7 @@ phase2_demo.py の直線階段を、Odoribaの名前の由来である「踊り�
 
 import json
 import os
+import warnings
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -654,7 +655,7 @@ def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstac
 # ---- ボトルネック掃引 ----
 
 def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
-                   with_human=True, max_pitch=None):
+                   with_human=True, max_pitch=None, s_values=None, fine=False):
     """中心線上の各弧長sについて、粗い姿勢グリッドの中で達成できる
     最良のクリアランス(cm)を返す: [(s, capacity_cm, best_pose), ...]。
 
@@ -662,9 +663,24 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
     |capacity| cm足りない」ことを意味する(姿勢グリッドの解像度の
     範囲で。Phase 1のresolution-completeと同じ但し書き)。
     ボトルネック = capacityが最小の位置。
+
+    s_values を渡すとその弧長だけを掃引する。fine=True なら、一番狭い所の
+    近くを細かく掃引し直して姿勢も探し直す(phase2_lstair.fine_sweep)。
     """
     if max_pitch is None:
         max_pitch = MAX_TILT_DEG if with_human else 90.0
+    if fine:
+        def clearance(pos, quat):
+            if tilt_deg(quat) > max_pitch + 1e-6:
+                return -np.inf
+            if with_human:
+                return carriable_clearance_lstair(np.asarray(pos), quat, outer, obstacles,
+                                                  num_carriers)[0]
+            return furniture_clearance(pos, quat, outer, obstacles)
+        return fine_sweep(
+            lambda sv: sweep_capacity(outer, obstacles, num_carriers, ds, with_human,
+                                      max_pitch, s_values=sv),
+            clearance, skeleton_heading, ds)
     pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
@@ -674,7 +690,9 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
     # (phase1のEND_MARGINと同じ考え方)。
     s_margin = FURN_L / 2 + p.CARRY_ARM + p.HUMAN_R + 10.0
     results = []
-    for s in np.arange(s_margin, S_TOTAL - s_margin + 1e-9, ds):
+    if s_values is None:
+        s_values = np.arange(s_margin, S_TOTAL - s_margin + 1e-9, ds)
+    for s in s_values:
         x0, y0 = skeleton_xy(s)
         in_corner = CORNER_S0 <= s <= CORNER_S1
         yaws = (0.0, 22.5, 45.0, 67.5, 90.0) if in_corner else \
@@ -701,6 +719,109 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
                             best_pose = (pos.tolist(), quat.tolist())
         results.append((float(s), float(best), best_pose))
     return results
+
+
+def refine_pose(pos, quat, clearance_fn, heading_deg, step_cm=5.0, step_deg=5.0,
+                min_step=0.5, max_evals=300):
+    """掃引の粗い姿勢グリッドで見つけた最良姿勢を、その近くで細かく探し直す。
+
+    掃引は横方向±10cm・ピッチ15度刻みなどの粗いグリッドなので、一番狭い所の
+    「あと何cm」がグリッドの当たり外れで数cm揺れる。ここでは座標ごとに
+    ±刻みを試して良くなれば動き、良くならなければ刻みを半分にする
+    (パターン探索)。動かすのは横方向(中心線に直交)・高さ・ヨー・ピッチ・
+    ロールで、中心線に沿った方向には動かさない(動かすと、その位置の余裕
+    ではなく、もっと広い隣の位置の余裕を測ってしまうため)。
+
+    clearance_fn(pos, quat) は1姿勢の余裕(cm)。heading_deg は中心線の進行方向のヨー(度)。
+    戻り値: (余裕, (pos, quat))。元より悪くはならない。
+    """
+    pos = np.asarray(pos, dtype=float)
+    hr = np.radians(heading_deg)
+    side = np.array([-np.sin(hr), np.cos(hr), 0.0])
+    up = np.array([0.0, 0.0, 1.0])
+    with warnings.catch_warnings():
+        # 垂直に立てた姿勢(ピッチ90度)ではヨーとロールが分けられない警告が出るが、
+        # どちらに割り振っても同じ姿勢なので無視してよい
+        warnings.simplefilter("ignore", UserWarning)
+        yaw, neg_pitch, roll = Rotation.from_quat(quat).as_euler("ZYX", degrees=True)
+    x = np.array([0.0, 0.0, yaw, -neg_pitch, roll])   # 横, 高さ, ヨー, ピッチ, ロール
+    steps = np.array([step_cm, step_cm, step_deg, step_deg, step_deg])
+
+    def pose_of(v):
+        return pos + side * v[0] + up * v[1], _pose(v[2], v[3], v[4]).as_quat()
+
+    best = clearance_fn(*pose_of(x))
+    evals = 1
+    while evals < max_evals and np.max(steps) >= min_step:
+        moved = False
+        for i in range(len(x)):
+            for d in (1.0, -1.0):
+                cand = x.copy()
+                cand[i] += d * steps[i]
+                c = clearance_fn(*pose_of(cand))
+                evals += 1
+                if c > best:
+                    best, x, moved = c, cand, True
+                    break
+        if not moved:
+            steps /= 2.0
+    p_best, q_best = pose_of(x)
+    return float(best), (p_best.tolist(), q_best.tolist())
+
+
+def refine_sweep(sweep, clearance_fn, heading_fn, window_cm=10.0):
+    """掃引結果のうち、一番狭い所から window_cm 以内の位置だけ refine_pose で
+    細かく探し直した掃引結果を返す(同じ形のリスト)。
+
+    一番狭い所だけを直すと、粗いグリッドでたまたま損をしていた2番目の
+    位置が実は一番狭い、という取りこぼしが出るので、近い値の位置も直す。
+    heading_fn(s) は弧長sでの中心線の進行方向のヨー(度)。
+    """
+    finite = [c for _, c, _ in sweep if np.isfinite(c)]
+    if not finite:
+        return list(sweep)
+    worst = min(finite)
+    out = []
+    for s, c, pose in sweep:
+        if np.isfinite(c) and c <= worst + window_cm:
+            c2, pose2 = refine_pose(pose[0], pose[1], clearance_fn, heading_fn(s))
+            if c2 > c:
+                c, pose = c2, pose2
+        out.append((s, c, pose))
+    return out
+
+
+def fine_sweep(sweep_fn, clearance_fn, heading_fn, ds, ds_fine=3.0, window_cm=10.0):
+    """粗い掃引のあと、一番狭い所の近くだけを細かく掃引し直して姿勢も探し直す。
+
+    sweep_fn(s_values) は指定した弧長だけを掃引する関数(s_values=None なら
+    いつもの刻みで全体)。粗い刻み(ds)の間に一番狭い所が隠れていることが
+    あるので(L字で ds=15cm と 5cm で値が約10cm違った)、一番狭い所から
+    window_cm 以内の各位置の前後 ds の範囲を ds_fine 刻みで足し、そのうえで
+    refine_sweep をかける。戻り値は弧長順の掃引結果(sweep_capacity と同じ形)。
+    """
+    coarse = sweep_fn(None)
+    finite = [c for _, c, _ in coarse if np.isfinite(c)]
+    if not finite:
+        return coarse
+    worst = min(finite)
+    have = {round(s, 6) for s, _, _ in coarse}
+    s_lo, s_hi = coarse[0][0], coarse[-1][0]
+    extra = set()
+    for s, c, _ in coarse:
+        if np.isfinite(c) and c <= worst + window_cm:
+            for t in np.arange(s - ds + ds_fine, s + ds - 1e-9, ds_fine):
+                if s_lo <= t <= s_hi and round(t, 6) not in have:
+                    extra.add(round(float(t), 6))
+    merged = sorted(coarse + (sweep_fn(sorted(extra)) if extra else []),
+                    key=lambda r: r[0])
+    return refine_sweep(merged, clearance_fn, heading_fn, window_cm)
+
+
+def skeleton_heading(s):
+    """弧長sでのL字の中心線の進行方向のヨー(度)。sweep_capacity の横方向と
+    同じく、コーナー点の手前は90度(+y)、先は0度(+x)とする。"""
+    return 90.0 if s <= S_CORNER else 0.0
 
 
 def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
