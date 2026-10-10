@@ -745,7 +745,7 @@ def refine_pose(pos, quat, clearance_fn, heading_deg, step_cm=5.0, step_deg=5.0,
         warnings.simplefilter("ignore", UserWarning)
         yaw, neg_pitch, roll = Rotation.from_quat(quat).as_euler("ZYX", degrees=True)
     x = np.array([0.0, 0.0, yaw, -neg_pitch, roll])   # 横, 高さ, ヨー, ピッチ, ロール
-    steps = np.array([step_cm, step_cm, step_deg, step_deg, step_deg])
+    steps = np.array([step_cm, step_cm, step_deg, step_deg, step_deg], dtype=float)
 
     def pose_of(v):
         return pos + side * v[0] + up * v[1], _pose(v[2], v[3], v[4]).as_quat()
