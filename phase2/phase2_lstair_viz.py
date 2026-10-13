@@ -231,8 +231,21 @@ def render_png(result, out_path):
     path_box = parse_path(box["path"] if box_found else box["best_effort_path"])
     box_title = "Furniture only: "
     if box_found:
-        mc, _ = L.path_min_clearance_lstair(path_box, False, outer, obstacles)
-        box_title += f"PASS (min clearance {mc + 0.0:.1f}cm)"  # +0.0で-0.0表記を防ぐ
+        # 「余裕◯cm」をRRTの生の経路から取ると、経路が壁や床ギリギリを
+        # 掠めるためほぼ常に0cmになり、数字として意味をなさない。
+        # --sweep-boxの掃引結果(位置ごとの最良姿勢での余裕)があれば
+        # そちらを使う: PRDの「最も狭いのは踊り場で、余裕は◯cmです」。
+        if "bottleneck_furniture_only" in result:
+            bn = result["bottleneck_furniture_only"]
+            s_land0, s_land1 = L.FL1_Y1, L.S_CORNER + (L.FL2_X0 - L.CENTER)
+            where = "landing" if s_land0 <= bn["s"] <= s_land1 else f"s={bn['s']:.0f}cm"
+            box_title += (f"PASS (tightest: {where}, "
+                          f"{bn['capacity_cm']:.1f}cm margin at best pose)")
+        else:
+            mc, _ = L.path_min_clearance_lstair(path_box, False, outer, obstacles)
+            box_title += ("PASS (min clearance 0cm = floor contact while sliding)"
+                          if mc + 0.0 < 0.5 else
+                          f"PASS (min clearance {mc + 0.0:.1f}cm)")  # +0.0で-0.0を防ぐ
     else:
         box_title += "BLOCKED (not found)"
     path_car = parse_path(car["path"] if car_found else car["best_effort_path"])
@@ -278,6 +291,22 @@ def render_png(result, out_path):
                       fontsize=9, color="#205020",
                       bbox=dict(boxstyle="round", facecolor="#eaf5ea",
                                 edgecolor="#88aa88"))
+
+    # 長さの二分探索(--find-max-length)の結果があれば、右パネルに
+    # 「◯人で運ぶなら長さ◯cmまで」を注記する(運搬者ありの上限サイズ、
+    # PRDの本命の出力)
+    if "max_length_with_carriers" in result:
+        ml = result["max_length_with_carriers"]
+        if ml["max_l"] is not None:
+            ax_t_car.text(0.97, 0.03,
+                          f"carried by {ml['num_carriers']} people, this staircase\n"
+                          f"fits furniture up to L = {ml['max_l']:.0f}cm\n"
+                          f"(same W x H; furniture alone passes\n"
+                          f" even at L = {meta['furniture']['L']:.0f}cm)",
+                          transform=ax_t_car.transAxes, ha="right", va="bottom",
+                          fontsize=9, color="#5a2020",
+                          bbox=dict(boxstyle="round", facecolor="#f7ecec",
+                                    edgecolor="#bb8888"))
 
     st = meta["stair"]
     fu = meta["furniture"]

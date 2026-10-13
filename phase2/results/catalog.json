@@ -1,0 +1,140 @@
+{
+ "stair": "phase2_lstair (width 90, landing 90x90, 6+6 steps)",
+ "num_carriers": 2,
+ "max_iter": 4000,
+ "furniture": [
+  {
+   "box": {
+    "found": true,
+    "capacity_cm": 12.0,
+    "s": 525.0,
+    "time_s": 5.4947509765625
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -21.196440600263884,
+    "s": 540.0,
+    "time_s": 64.55674242973328
+   },
+   "name": "冷蔵庫(400Lクラス)",
+   "L": 180,
+   "W": 65,
+   "H": 60,
+   "note": "横に寝かせて運ぶ想定(実際は縦運搬が多い点は簡略化)"
+  },
+  {
+   "box": {
+    "found": false,
+    "capacity_cm": 9.0,
+    "s": 112.5,
+    "time_s": 18.43279528617859
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -1.0,
+    "s": 532.5,
+    "time_s": 58.26893353462219
+   },
+   "name": "ドラム式洗濯機",
+   "L": 105,
+   "W": 72,
+   "H": 60,
+   "note": ""
+  },
+  {
+   "box": {
+    "found": false,
+    "capacity_cm": 2.5,
+    "s": 140.0,
+    "time_s": 17.276098012924194
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -23.65219667964334,
+    "s": 545.0,
+    "time_s": 46.25664138793945
+   },
+   "name": "2人掛けソファ",
+   "L": 160,
+   "W": 85,
+   "H": 80,
+   "note": ""
+  },
+  {
+   "box": {
+    "found": false,
+    "capacity_cm": -0.0,
+    "s": 160.0,
+    "time_s": 2.809514284133911
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -37.171605517386766,
+    "s": 535.0,
+    "time_s": 2.6044020652770996
+   },
+   "name": "3人掛けソファ",
+   "L": 200,
+   "W": 90,
+   "H": 85,
+   "note": ""
+  },
+  {
+   "box": {
+    "found": false,
+    "capacity_cm": -0.0,
+    "s": 160.0,
+    "time_s": 2.4708287715911865
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -14.64492429943948,
+    "s": 535.0,
+    "time_s": 2.6431243419647217
+   },
+   "name": "本棚(高さ200cm)",
+   "L": 200,
+   "W": 90,
+   "H": 30,
+   "note": "背板を下に寝かせて運ぶ想定"
+  },
+  {
+   "box": {
+    "found": false,
+    "capacity_cm": -5.0,
+    "s": 532.5,
+    "time_s": 18.45304036140442
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -26.281745930520216,
+    "s": 547.5,
+    "time_s": 76.98047304153442
+   },
+   "name": "セミダブルマットレス",
+   "L": 195,
+   "W": 25,
+   "H": 120,
+   "note": "立てて(厚み25cmを幅に)運ぶ想定。剛体仮定なので実際より厳しい"
+  },
+  {
+   "box": {
+    "found": true,
+    "capacity_cm": 8.0,
+    "s": 520.0,
+    "time_s": 7.650819778442383
+   },
+   "carriers": {
+    "found": false,
+    "capacity_cm": -28.980085074496856,
+    "s": 550.0,
+    "time_s": 83.54063701629639
+   },
+   "name": "タンス(検証シナリオ)",
+   "L": 200,
+   "W": 50,
+   "H": 65,
+   "note": "これまでの検証シナリオと同一"
+  }
+ ]
+}

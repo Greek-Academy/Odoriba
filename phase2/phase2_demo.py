@@ -123,6 +123,15 @@ def shape_clearance_3d(points, outer, obstacles):
     安全側の近似。Phase 1のL字廊下は正確な多角形距離を使っていたが、
     3Dの合併の正確な距離は割に合わないのでここは近似で通す。
     """
+    return float(np.min(clearance_points_3d(points, outer, obstacles)))
+
+
+def clearance_points_3d(points, outer, obstacles):
+    """各点のクリアランス(cm)の配列。shape_clearance_3dはこの最小値。
+
+    点ごとの値が要るのは、部位ごとに半径を引く人型の体の判定
+    (phase2_lstair.carrier_body_clearance)。
+    """
     pts = np.asarray(points)
     inner = np.max(
         np.stack([-g3.obb_sdf_points(pts, c, r, h) for c, r, h in _outer_boxes(outer)]),
@@ -131,7 +140,7 @@ def shape_clearance_3d(points, outer, obstacles):
     for center, rot, half in obstacles:
         # 障害物の外なら+、めり込んでいれば-
         worst = np.minimum(worst, g3.obb_sdf_points(pts, center, rot, half))
-    return float(np.min(worst))
+    return worst
 
 
 def furniture_world_points(pos, quat):
@@ -307,7 +316,7 @@ def sample_guided(outer, rng, p=0.7, pos_noise=15.0, rot_noise_deg=10.0):
 
 
 def edge_valid(pos1, quat1, pos2, quat2, with_human, outer, obstacles, num_carriers=None,
-               validator=None):
+               validator=None, w_rot=None):
     """2状態間を補間し、刻み幅EDGE_RESごとに衝突チェックする。
 
     端点だけ見ると、壁を突き抜ける経路が「有効」と判定されてしまう
@@ -317,7 +326,7 @@ def edge_valid(pos1, quat1, pos2, quat2, with_human, outer, obstacles, num_carri
     独自の制約(例: L字階段の傾き上限)を足したいときに差し替える。
     """
     check = collision_free if validator is None else validator
-    d = g3.dist_se3(pos1, quat1, pos2, quat2, w=W_ROT)
+    d = g3.dist_se3(pos1, quat1, pos2, quat2, w=W_ROT if w_rot is None else w_rot)
     n = max(2, int(d / EDGE_RES))
     for i in range(n + 1):
         t = i / n
@@ -336,55 +345,65 @@ class _Node:
         self.parent = parent
 
 
-def _nearest(tree, pos, quat):
-    """treeの全ノードを線形走査して最近傍を探す。
+def _nearest(tree, pos, quat, w_rot=None):
+    """treeの全ノードから最近傍を探す(numpyで一括計算)。
 
-    既知の性能上の限界: これは木のサイズに対して線形で、extend/connect
-    のたびに呼ばれるため、反復回数が数千を超えるとRRT全体がO(n^2)で
-    重くなる(運搬者ありのオラクルはさらに1回あたりのコストも高い)。
-    KD-treeなどでの高速化はCLAUDE.mdの通り「性能が足りなくなってから」
-    でよいが、探索が数分単位で終わらない場合はまずここを疑う。
+    以前はノードごとにg3.dist_se3を呼ぶPythonループで、scipyの
+    Rotationオブジェクト生成が1ノードごとに走るぶん遅かった。式は
+    同じ「位置差のノルム + w * 回転角」で、回転角は単位クォータニオン
+    の内積dから 2*atan2(sqrt(1-d^2), |d|) として一括計算する
+    (dist_se3が使う相対回転のmagnitudeと数学的に同値)。
+
+    木のサイズに対して線形なのは変わらない(O(n^2)の係数を大きく
+    下げただけ)。反復数万の規模で足りなくなったらKD-tree等を検討する
+    -- CLAUDE.mdの「性能が足りなくなってから」。
     """
-    dists = [g3.dist_se3(n.pos, n.quat, pos, quat, w=W_ROT) for n in tree]
+    w = W_ROT if w_rot is None else w_rot
+    P = np.array([n.pos for n in tree])
+    Q = np.array([n.quat for n in tree])
+    dp = np.linalg.norm(P - np.asarray(pos), axis=1)
+    d = np.clip(np.abs(Q @ np.asarray(quat)), 0.0, 1.0)
+    dists = dp + w * (2.0 * np.arctan2(np.sqrt(1.0 - d * d), d))
     i = int(np.argmin(dists))
-    return i, dists[i]
+    return i, float(dists[i])
 
 
-def _steer(pos_from, quat_from, pos_to, quat_to):
+def _steer(pos_from, quat_from, pos_to, quat_to, w_rot=None):
     """pos_from/quat_fromから、pos_to/quat_toの方向へMAX_STEPだけ進んだ状態。"""
-    d = g3.dist_se3(pos_from, quat_from, pos_to, quat_to, w=W_ROT)
+    d = g3.dist_se3(pos_from, quat_from, pos_to, quat_to, w=W_ROT if w_rot is None else w_rot)
     t = 1.0 if d <= MAX_STEP else MAX_STEP / d
     return g3.interpolate_se3(pos_from, quat_from, pos_to, quat_to, t)
 
 
 def _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
-            validator=None):
+            validator=None, w_rot=None):
     """treeを1歩だけpos_target/quat_targetへ伸ばす。伸びたら新しいノード
     のインデックスを、伸びなければNoneを返す。"""
-    i_near, _ = _nearest(tree, pos_target, quat_target)
+    i_near, _ = _nearest(tree, pos_target, quat_target, w_rot=w_rot)
     near = tree[i_near]
-    pos_new, quat_new = _steer(near.pos, near.quat, pos_target, quat_target)
+    pos_new, quat_new = _steer(near.pos, near.quat, pos_target, quat_target, w_rot=w_rot)
     if not edge_valid(near.pos, near.quat, pos_new, quat_new, with_human, outer, obstacles,
-                      num_carriers, validator=validator):
+                      num_carriers, validator=validator, w_rot=w_rot):
         return None
     tree.append(_Node(pos_new, quat_new, i_near))
     return len(tree) - 1
 
 
 def _connect(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
-             validator=None):
+             validator=None, w_rot=None):
     """targetに向かって、ブロックされるかtargetに届くまでextendを繰り返す
     (RRT-Connectの"connect"ヒューリスティック: 1本のツリーを毎回1歩ずつ
     伸ばすより、狭い通路を素早く抜けやすい)。"""
     last = None
     while True:
         idx = _extend(tree, pos_target, quat_target, with_human, outer, obstacles, num_carriers,
-                      validator=validator)
+                      validator=validator, w_rot=w_rot)
         if idx is None:
             return last
         last = idx
         node = tree[idx]
-        if g3.dist_se3(node.pos, node.quat, pos_target, quat_target, w=W_ROT) < 1e-6:
+        if g3.dist_se3(node.pos, node.quat, pos_target, quat_target,
+                       w=W_ROT if w_rot is None else w_rot) < 1e-6:
             return last  # targetそのものに到達
 
 
@@ -429,7 +448,8 @@ def _build_path(tree_a, idx_a, tree_b, idx_b, swapped):
 
 
 def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
-                 max_iter=3000, seed=0, sampler=None, validator=None, return_trees=False):
+                 max_iter=3000, seed=0, sampler=None, validator=None, return_trees=False,
+                 w_rot=None):
     """RRT-Connect本体。startとgoalそれぞれからツリーを伸ばし、交互に
     相手のツリーの新しいノードへconnectを試みる(implementation-guide.md
     のrrt_connectと同じ構造)。
@@ -441,6 +461,9 @@ def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
     (L字階段の中心線+コーナー回転ヒント等)を差し替えられるようにする。
     既定はこのファイルの直線階段用sample_guided。
     validatorはedge_valid参照(既定はcollision_free)。
+    w_rotはSE(3)距離の回転項の重み(既定はこのファイルのW_ROT)。環境に
+    よって適正値が桁で違う(90度旋回が主役のL字階段では60)ため、
+    モジュール変数の上書きではなく引数で渡せるようにしてある。
     return_trees=Trueなら(path, start_tree)を返す。pathがNoneのとき、
     start側ツリーから「どこまで到達できたか」(best-effort)を呼び出し側が
     再構成できるようにするため。
@@ -464,11 +487,11 @@ def rrt_connect(start, goal, with_human, outer, obstacles, num_carriers=None,
     for _ in range(max_iter):
         pos_rand, quat_rand = sampler(rng)
         idx_new = _extend(ta, pos_rand, quat_rand, with_human, outer, obstacles, num_carriers,
-                          validator=validator)
+                          validator=validator, w_rot=w_rot)
         if idx_new is not None:
             new_node = ta[idx_new]
             idx_conn = _connect(tb, new_node.pos, new_node.quat, with_human, outer, obstacles,
-                                num_carriers, validator=validator)
+                                num_carriers, validator=validator, w_rot=w_rot)
             if idx_conn is not None and _reached(tb[idx_conn], new_node.pos, new_node.quat):
                 path = _build_path(ta, idx_new, tb, idx_conn, swapped)
                 return (path, start_tree) if return_trees else path
