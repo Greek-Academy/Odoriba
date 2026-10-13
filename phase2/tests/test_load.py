@@ -93,3 +93,21 @@ def test_tilt_pitches_adds_the_cap():
         cap = L.max_tilt_deg()
         assert L.tilt_pitches((0.0, 15.0, 30.0, 45.0, 55.0, 70.0)) == \
             [0.0, 15.0, 30.0, 45.0, cap]
+
+
+def test_weight_limit_is_inverse_of_tilt_cap():
+    assert L.weight_limit_kg(0.0, 2) == pytest.approx(80.0)
+    assert L.weight_limit_kg(0.0, 2, preset="diy") == pytest.approx(50.0)
+    assert L.weight_limit_kg(60.0, 1) == pytest.approx(40.0)
+    w = L.weight_limit_kg(40.0, 2)
+    with weight(w):
+        assert L.max_tilt_deg(2) == pytest.approx(40.0, abs=1e-6)
+
+
+def test_find_needed_tilt_restores_settings():
+    # 37度以上傾けられれば通る、という仮の判定
+    needed = L.find_needed_tilt(lambda: L.MAX_TILT_DEG >= 37.0, tol=0.5)
+    assert 37.0 <= needed <= 37.5
+    assert L.find_needed_tilt(lambda: False) is None
+    assert L.find_needed_tilt(lambda: True) == 0.0
+    assert L.MAX_TILT_DEG == 55.0 and L.FURN_WEIGHT_KG is None

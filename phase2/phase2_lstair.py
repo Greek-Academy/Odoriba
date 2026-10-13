@@ -927,6 +927,53 @@ def find_max_furniture_length(outer, obstacles, num_carriers=None, tol=2.0,
     return lo, trials
 
 
+def find_needed_tilt(passes, tol=1.0):
+    """通るのに必要な最小の傾き上限(度)を二分探索する。90度でも通らなければNone。
+
+    passes() は現在の設定で「通る」かを返す関数(掃引の最小余裕>=0 など)。
+    重さを外し、MAX_TILT_DEG を一時的に変えながら呼ぶ。傾き上限を広げるほど
+    許される姿勢は増えるので、通る/通らないは上限について単調。
+    ここで求めた角度は重さに依存しないので、重さの上限は weight_limit_kg で
+    プリセットごとに換算できる(掃引をプリセットの数だけ回さずに済む)。
+    """
+    global FURN_WEIGHT_KG, MAX_TILT_DEG
+    orig = (FURN_WEIGHT_KG, MAX_TILT_DEG)
+    try:
+        FURN_WEIGHT_KG = None
+
+        def ok(cap):
+            global MAX_TILT_DEG
+            MAX_TILT_DEG = cap
+            return passes()
+        if not ok(90.0):
+            return None
+        if ok(0.0):
+            return 0.0
+        lo, hi = 0.0, 90.0
+        while hi - lo > tol:
+            mid = (lo + hi) / 2
+            lo, hi = (lo, mid) if ok(mid) else (mid, hi)
+        return hi
+    finally:
+        FURN_WEIGHT_KG, MAX_TILT_DEG = orig
+
+
+def weight_limit_kg(tilt, num_carriers=None, preset=None):
+    """傾き tilt(度、ロールなし)まで傾けても下側の人が支えきれる最大の重さ(kg)。
+
+    1人なら傾きに関係なく1人の上限そのもの。2人なら上限 / 下側の人の割合。
+    """
+    global FURN_WEIGHT_KG
+    limit = CARRIER_PRESETS[preset or CARRIER_PRESET]
+    orig = FURN_WEIGHT_KG
+    try:
+        FURN_WEIGHT_KG = 1.0
+        frac = max(carrier_loads_kg(_pose(0.0, tilt).as_quat(), num_carriers))
+    finally:
+        FURN_WEIGHT_KG = orig
+    return limit / frac
+
+
 # ---- START / GOAL ----
 _YAW90 = _pose(90.0, 0.0).as_quat()   # 長軸を+y(下廊下の進行方向)へ
 _YAW0 = _pose(0.0, 0.0).as_quat()     # 長軸を+x(上廊下の進行方向)へ
