@@ -38,6 +38,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 import geometry3d as g3
+import human_figure as hf
 import phase2_demo as p
 
 # SE(3)距離の回転項の重み。phase2_demo.W_ROT=0.4は自身のdocstring
@@ -46,8 +47,11 @@ import phase2_demo as p
 # その結果、edge_valid(刻み幅EDGE_RES=4cm)が90度の回転エッジを
 # 3点しかチェックせず、コーナーの回転で壁を抜ける経路を「有効」と
 # 誤判定し得る。直線階段(回転がほぼない)では実害が出なかったが、
-# 踊り場の90度旋回が主役のこの環境では致命的なので上書きする。
-p.W_ROT = 60.0
+# 踊り場の90度旋回が主役のこの環境では致命的。以前はここで
+# p.W_ROT を上書きしていたが、importの副作用(このモジュールを読む
+# だけで直線階段デモの挙動が変わる)を避けるため、rrt_connectの
+# w_rot引数として都度渡す。
+W_ROT = 60.0
 
 # ---- パラメータ(cm) ----
 # 階段は実測前の仮値(建築基準法ぎりぎりではなく、ごく普通の戸建て
@@ -133,10 +137,13 @@ def build_lstairs():
     return outer, obstacles
 
 
-def floor_z(x, y):
+def floor_z(x, y, z_hint=None):
     """(x, y) の真下の歩行面の高さ。歩ける場所でなければNone。
 
     運搬者オラクル(足元の床)とサンプラー(誘導高さ)の両方で使う。
+
+    z_hint(高さのヒント)はスキャン空間の床(scan_space)と呼び出し方を
+    揃えるための引数で、ここでは床が重ならないので使わない。
     """
     if 0.0 <= x <= STAIR_WIDTH and 0.0 <= y <= LAND_Y1:
         if y < FL1_Y0:
@@ -166,6 +173,50 @@ S_TOTAL = S_CORNER + (TOP_X1 - CENTER)
 # 立て上げピッチ)を撒く。踊り場の前後に少し広げてある。
 CORNER_S0 = FL1_Y1 - 40.0
 CORNER_S1 = S_CORNER + (STAIR_WIDTH - CENTER) + 40.0
+
+
+def configure(width=None, rise=None, tread=None, n_steps1=None, n_steps2=None,
+              base_d=None, top_d=None, ceil_clear=None):
+    """L字階段の寸法を数値で設定し、派生量(座標・中心線など)を作り直す。
+
+    「実測や好みの数値から仮想階段を組む」ための入口。指定しない引数は
+    現在値を維持する。build_lstairs/make_sampler/オラクル等はここで
+    再計算したモジュール変数を参照するので、この呼び出し後の判定・可視化は
+    新しい寸法で動く。
+    """
+    global STAIR_WIDTH, RISE, TREAD, N_STEPS1, N_STEPS2, BASE_D, TOP_D, CEIL_CLEAR
+    global FL1_Y0, FL1_Y1, LAND_Y1, LAND_Z, FL2_X0, FL2_X1, TOP_X1, TOP_Z
+    global CENTER, LAND_YC, S_CORNER, S_TOTAL, CORNER_S0, CORNER_S1, STAIR_ANGLE_DEG
+    if width is not None: STAIR_WIDTH = float(width)
+    if rise is not None: RISE = float(rise)
+    if tread is not None: TREAD = float(tread)
+    if n_steps1 is not None: N_STEPS1 = int(n_steps1)
+    if n_steps2 is not None: N_STEPS2 = int(n_steps2)
+    if base_d is not None: BASE_D = float(base_d)
+    if top_d is not None: TOP_D = float(top_d)
+    if ceil_clear is not None: CEIL_CLEAR = float(ceil_clear)
+
+    FL1_Y0 = BASE_D
+    FL1_Y1 = BASE_D + N_STEPS1 * TREAD
+    LAND_Y1 = FL1_Y1 + STAIR_WIDTH
+    LAND_Z = N_STEPS1 * RISE
+    FL2_X0 = STAIR_WIDTH
+    FL2_X1 = FL2_X0 + N_STEPS2 * TREAD
+    TOP_X1 = FL2_X1 + TOP_D
+    TOP_Z = LAND_Z + N_STEPS2 * RISE
+    CENTER = STAIR_WIDTH / 2
+    LAND_YC = FL1_Y1 + STAIR_WIDTH / 2
+    S_CORNER = LAND_YC
+    S_TOTAL = S_CORNER + (TOP_X1 - CENTER)
+    CORNER_S0 = FL1_Y1 - 40.0
+    CORNER_S1 = S_CORNER + (STAIR_WIDTH - CENTER) + 40.0
+    STAIR_ANGLE_DEG = np.degrees(np.arctan2(RISE, TREAD))
+
+    # START/GOALも寸法依存なので作り直す(find_max_*が参照するため)
+    global START, GOAL
+    START = (np.array([CENTER, 170.0, FURN_H / 2]), _pose(90.0, 0.0).as_quat())
+    GOAL = (np.array([FL2_X1 + 170.0, LAND_YC, TOP_Z + FURN_H / 2]),
+            _pose(0.0, 0.0).as_quat())
 
 
 def skeleton_xy(s):
@@ -206,9 +257,22 @@ def furniture_points(pos, quat):
     return (local @ R.T) + np.asarray(pos)
 
 
+def env_clearance_points(pts, outer, obstacles):
+    """環境に対する各点の符号付き余裕(cm)の配列。
+
+    outer が clearance_points を持つ環境(スキャン空間 scan_space.ScanSpace)なら
+    それで測り、そうでなければ直方体の環境(外枠の合併 - 障害物)として測る。
+    オラクル・掃引・RRTは outer/obstacles をここに渡すだけなので、スキャン
+    空間を outer に渡せば(obstacles は None)そのまま同じ判定が動く。
+    """
+    if hasattr(outer, "clearance_points"):
+        return outer.clearance_points(pts)
+    return p.clearance_points_3d(pts, outer, obstacles)
+
+
 def furniture_clearance(pos, quat, outer, obstacles):
     """この姿勢での家具単体(運搬者なし)のクリアランス(cm)。"""
-    return p.shape_clearance_3d(furniture_points(pos, quat), outer, obstacles)
+    return float(np.min(env_clearance_points(furniture_points(pos, quat), outer, obstacles)))
 
 
 # 運搬者の胴体円柱: 膝下(LEG_CLEAR)から頭頂まで。ローカル点は使い回す。
@@ -220,6 +284,87 @@ _CARRIER_LOCAL = g3.cylinder_surface_sample_points(p.HUMAN_R, _CARRIER_HALF_H,
 def carrier_points(center):
     """運搬者カプセル(LEG_CLEAR..身長の円柱)の表面サンプル点。"""
     return _CARRIER_LOCAL + np.asarray(center)
+
+
+# 運搬者の体の判定モデル。"humanoid"(既定)は human_figure の人型
+# (横幅=肩幅40cm、前後=胴の厚み24cm、腕・頭・膝上の脚)、"cylinder" は
+# 従来の円柱(carrier_points)。感度分析(sensitivity.py)で新旧を比べるために残す。
+BODY_MODEL = "humanoid"
+# 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
+HAND_HALF_SPREAD = 18.0
+
+
+def _carrier_frame(pos, R, sign, side_offset, center):
+    """運搬者1人の足元の床の高さ・正面の向き(水平xy)・両手の目標点。
+
+    手の目標点は家具の端面上(把持点の高さ)に置く。正面は家具の中心の
+    方向。家具が縦に立っていて真上/真下にあるときは、長軸の水平成分
+    (の逆向き)で代用する。判定(carrier_body_clearance)と描画
+    (carrier_poses_lstair)で共通に使う。
+    """
+    hl, hw = FURN_L / 2, FURN_W / 2
+    hands = [pos + R @ np.array([sign * hl, float(np.clip(side_offset + d, -hw, hw)), 0.0])
+             for d in (HAND_HALF_SPREAD, -HAND_HALF_SPREAD)]
+    facing = (pos - center)[:2]
+    if np.linalg.norm(facing) < 1e-6:
+        facing = -sign * (R @ np.array([1.0, 0.0, 0.0]))[:2]
+    if np.linalg.norm(facing) < 1e-6:
+        facing = np.array([1.0, 0.0])
+    floor = float(center[2] - _CARRIER_HALF_H - LEG_CLEAR)
+    return floor, facing, hands
+
+
+def body_meta():
+    """結果JSONのmeta.carrierに足す、体の判定モデルの記録。"""
+    return {"body_model": BODY_MODEL, "shoulder_width": 2 * hf.SHOULDER_HW,
+            "torso_depth": 2 * hf.TORSO_HD}
+
+
+def _carrier_signs(n):
+    """place_humans_lstairの戻り値の順に対応する、長軸方向の符号。"""
+    return (-1.0,) if n == 1 else (1.0, -1.0)
+
+
+def carrier_body_clearance(pos, quat, side_offset, placed, clearance_fn):
+    """運搬者全員の体の余裕(cm)の最小値。
+
+    placedはplace_humans_lstairの戻り値。clearance_fnは点群の各点の
+    符号付き距離の配列を返す関数で、直方体の環境なら p.clearance_points_3d、
+    メッシュ環境ならその版を渡す(体の形の扱いを環境ごとに書かずに済む)。
+    """
+    if BODY_MODEL == "cylinder":
+        return min(float(np.min(clearance_fn(carrier_points(c)))) for c, _ in placed)
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    parts = []
+    for sign, (center, _) in zip(_carrier_signs(len(placed)), placed):
+        floor, facing, hands = _carrier_frame(pos, R, sign, side_offset, center)
+        parts += hf.body_parts(center[:2], floor, facing, hands, LEG_CLEAR)
+    return hf.body_clearance(parts, clearance_fn)
+
+
+def carrier_furniture_clearance(pos, quat, side_offset, placed):
+    """運搬者全員の体と家具自身の余裕(cm)の最小値。負なら体が家具に食い込む。
+
+    把持点は家具の端からCARRY_ARMだけ長軸方向に離した位置で固定なので、
+    家具を傾けると端の角が運搬者の頭上・胸元にかぶさり、体が家具の中に
+    入った「ありえない姿勢」が成立してしまっていた(壁との余裕しか見て
+    いなかったため)。腕は家具を持つために触れているので数えない。
+    家具は直方体(FURN_L x W x H)として測る。
+    """
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    half = np.array([FURN_L / 2, FURN_W / 2, FURN_H / 2])
+    if BODY_MODEL == "cylinder":
+        pts = np.vstack([carrier_points(c) for c, _ in placed])
+        return float(np.min(g3.obb_sdf_points(pts, pos, R, half)))
+    best = np.inf
+    for sign, (center, _) in zip(_carrier_signs(len(placed)), placed):
+        floor, facing, hands = _carrier_frame(pos, R, sign, side_offset, center)
+        for pts, r in hf.body_parts(center[:2], floor, facing, hands, LEG_CLEAR,
+                                    with_arms=False):
+            best = min(best, float(np.min(g3.obb_sdf_points(pts, pos, R, half))) - r)
+    return best
 
 
 def _pose(yaw_deg, pitch_deg, roll_deg=0.0):
@@ -296,7 +441,7 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
 
 # ---- 可搬性オラクル(このモジュールでの精密化) ----
 
-def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
+def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None):
     """把持点と運搬者カプセル中心を返す。立てなければNone。
 
     phase2_demo.place_humans_3dとの違い:
@@ -308,8 +453,11 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     戻り値: [(capsule_center, reach_margin_cm), ...] または
     None(把持点の真下に歩ける床がない = そこに人は立てない)。
     reach_margin_cmは手の届く範囲までの余裕(負なら届かない)。
+    floor_fnは歩行面の高さ関数(既定はこのモジュールのL字のfloor_z)。
+    折り返し階段など別の環境でオラクルを使い回すときに差し替える。
     """
     num_carriers = p.NUM_CARRIERS if num_carriers is None else num_carriers
+    floor_fn = floor_z if floor_fn is None else floor_fn
     R = g3.rotmat_from_quat(quat)
     pos = np.asarray(pos)
     hl = FURN_L / 2
@@ -318,7 +466,8 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     signs = (-1.0,) if num_carriers == 1 else (1.0, -1.0)
     for sign in signs:
         grip = pos + R @ np.array([sign * (hl + p.CARRY_ARM), side_offset, 0.0])
-        fz = floor_z(grip[0], grip[1])
+        # 把持点の高さをヒントに渡す(床が上下に重なる所で正しい段を選ぶため)
+        fz = floor_fn(grip[0], grip[1], grip[2])
         if fz is None:
             return None
         hand = grip[2] - fz
@@ -328,7 +477,8 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None):
     return out
 
 
-def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None):
+def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
+                               floor_fn=None):
     """運搬者込みで達成できる最良のクリアランス(cm)と、その横位置。
 
     phase2_demo.carriable_clearanceと同じ総当たりだが、
@@ -336,22 +486,31 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None):
         cm換算せず、-infで返す。「あと何cm」の対象は幾何の余裕だけ)
       - 手の届く範囲までの余裕(cm)もクリアランスの一項として混ぜる
         (届かない場合は負のcmとして「あとどれだけ低ければ持てたか」になる)
+
+    家具が壁に当たっていても運搬者の項まで評価する。以前は家具の余裕が
+    負ならその値をすぐ返していたため、家具が壁にちょうど触れている姿勢
+    (余裕 -0.0cm)が、運搬者の項では何十cmも足りなくても「ほぼ0cm」と
+    評価され、掃引の最良姿勢に選ばれていた。通る/通らないだけを知りたい
+    RRTの判定(state_valid)は、家具の余裕が負なら先に打ち切る。
     """
     if with_tilt_violation(quat):
         return -np.inf, None
     bc = furniture_clearance(pos, quat, outer, obstacles)
-    if bc < 0:
-        return bc, None
     best = -np.inf
     best_offset = None
     for off in p.SIDE_OFFSETS:
-        placed = place_humans_lstair(pos, quat, off, num_carriers)
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
         if placed is None:
             continue
         terms = [bc]
-        for center, reach_margin in placed:
-            terms.append(reach_margin)
-            terms.append(p.shape_clearance_3d(carrier_points(center), outer, obstacles))
+        if ORACLE_TERMS["reach"]:
+            terms += [reach_margin for _, reach_margin in placed]
+        if ORACLE_TERMS["body"]:
+            terms.append(carrier_body_clearance(
+                pos, quat, off, placed,
+                lambda pts: env_clearance_points(pts, outer, obstacles)))
+        if ORACLE_TERMS["self"]:
+            terms.append(carrier_furniture_clearance(pos, quat, off, placed))
         cand = min(terms)
         if cand > best:
             best = cand
@@ -363,32 +522,133 @@ def with_tilt_violation(quat):
     return tilt_deg(quat) > MAX_TILT_DEG
 
 
-def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None):
+# 可搬性オラクルの項を個別に外すスイッチ。通常は全部True のまま使う。
+# 「どの仮定を外すと不足量が何cm変わるか」を測る感度分析(sensitivity.py)専用。
+# 傾き上限は項ではなく MAX_TILT_DEG の値そのものを変えて調べる。
+# "self" は運搬者の体と家具自身の干渉(carrier_furniture_clearance)。
+ORACLE_TERMS = {"reach": True, "body": True, "self": True}
+
+# clearance_breakdownの項の日本語名(出力用)
+BREAKDOWN_LABELS = {
+    "furniture": "家具が壁・段に当たる",
+    "carrier_body": "運搬者の体が壁・段に当たる",
+    "carrier_self": "運搬者の体が家具に食い込む",
+    "reach": "手が届かない(持つ高さ)",
+    "no_floor": "運搬者の立つ床がない",
+    "tilt": "傾き上限を超える",
+}
+
+
+def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn=None):
+    """ある姿勢での可搬性オラクルの各項(cm)を名前付きで返す(説明・分析用)。
+
+    carriable_clearance_lstairは最小値しか返さず、家具が壁に当たった時点で
+    運搬者の項を評価しないため「なぜ通らないか」が分からない。ここでは
+    全項を評価して並べ、一番厳しい項の名前を limiting に入れる。
+    運搬者の項は、体と手の届く範囲の両方を含めて最良になる横位置で測る。
+    """
+    bd = {"furniture": float(furniture_clearance(pos, quat, outer, obstacles)),
+          "carrier_body": None, "carrier_self": None, "reach": None,
+          "tilt_deg": tilt_deg(quat), "max_tilt_deg": float(MAX_TILT_DEG)}
+    best = -np.inf
+    for off in p.SIDE_OFFSETS:
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+        if placed is None:
+            continue
+        body = carrier_body_clearance(pos, quat, off, placed,
+                                      lambda pts: env_clearance_points(pts, outer, obstacles))
+        selfc = carrier_furniture_clearance(pos, quat, off, placed)
+        reach = min(m for _, m in placed)
+        # 横位置は、オラクルと同じく有効な項だけの最小値が最良になるものを選ぶ
+        score = min([v for v, on in ((body, ORACLE_TERMS["body"]),
+                                     (selfc, ORACLE_TERMS["self"]),
+                                     (reach, ORACLE_TERMS["reach"])) if on],
+                    default=np.inf)
+        if score > best:
+            best = score
+            bd["carrier_body"], bd["carrier_self"] = float(body), float(selfc)
+            bd["reach"] = float(reach)
+    if bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
+        bd["limiting"] = "tilt"
+    elif bd["carrier_body"] is None:
+        bd["limiting"] = "no_floor" if bd["furniture"] >= 0 else "furniture"
+    else:
+        # 感度分析で外した項(ORACLE_TERMS が False)は決め手の候補にしない
+        enabled = {"carrier_body": ORACLE_TERMS["body"],
+                   "carrier_self": ORACLE_TERMS["self"], "reach": ORACLE_TERMS["reach"]}
+        bd["limiting"] = min(["furniture"] + [k for k, on in enabled.items() if on],
+                             key=lambda k: bd[k])
+    return bd
+
+
+def format_breakdown(bd):
+    """clearance_breakdownの結果を1行の日本語にする。"""
+    def cm(v):
+        return "-" if v is None else f"{v:+.1f}cm"
+    line = (f"内訳: 家具{cm(bd['furniture'])} / 運搬者の体{cm(bd['carrier_body'])} / "
+            f"体と家具{cm(bd.get('carrier_self'))} / "
+            f"手の届く範囲{cm(bd['reach'])} / 傾き{bd['tilt_deg']:.0f}度"
+            f"(上限{bd['max_tilt_deg']:.0f}) -> 決め手: {BREAKDOWN_LABELS[bd['limiting']]}")
+    if bd["max_tilt_deg"] - bd["tilt_deg"] < 0.5:
+        line += "(傾きが上限に張り付いている)"
+    return line
+
+
+def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
+                floor_fn=None):
     """このモジュール版のcollision_free(rrt_connectのvalidatorに渡す)。"""
+    if furniture_clearance(pos, quat, outer, obstacles) < 0:
+        return False
     if with_human:
-        cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers)
+        cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
+                                           floor_fn)
         return cc >= 0
-    return furniture_clearance(pos, quat, outer, obstacles) >= 0
+    return True
 
 
-def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None):
+def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
+                         floor_fn=None):
+    """描画専用: 最良の横位置で、運搬者を人の形で描くための姿勢のリスト。
+
+    1人ごとに dict(center=判定に使う円柱の中心, foot_xy=足元のxy,
+    floor_z=足元の床の高さ, facing=正面の向き(水平xy), hands=両手の目標点2つ)
+    を返す。手の目標点は家具の端面上(把持点の高さ)に置く。
+
+    詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
+    描きたいので、成立しない場合はside_offset=0の位置で代用する。
+    """
+    _, off = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
+                                        floor_fn)
+    if off is None:
+        off = 0.0
+    pos = np.asarray(pos)
+    R = g3.rotmat_from_quat(quat)
+    signs = _carrier_signs(1 if (num_carriers or p.NUM_CARRIERS) == 1 else 2)
+    placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+    if placed is None:
+        # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
+        centers = [pos + R @ np.array([sg * (FURN_L / 2 + p.CARRY_ARM), 0.0, 0.0])
+                   for sg in signs]
+    else:
+        centers = [c for c, _ in placed]
+
+    poses = []
+    for sg, center in zip(signs, centers):
+        floor, facing, hands = _carrier_frame(pos, R, sg, off, center)
+        poses.append(dict(center=center, foot_xy=center[:2], floor_z=floor,
+                          facing=facing, hands=hands))
+    return poses
+
+
+def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
+                                floor_fn=None):
     """描画専用: 最良の横位置での運搬者カプセル中心のリスト。
 
     詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
     描きたいので、成立しない場合はside_offset=0の位置で代用する。
     """
-    _, off = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers)
-    if off is None:
-        off = 0.0
-    placed = place_humans_lstair(pos, quat, off, num_carriers)
-    if placed is None:
-        # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
-        R = g3.rotmat_from_quat(quat)
-        hl = FURN_L / 2
-        signs = (-1.0,) if (num_carriers or p.NUM_CARRIERS) == 1 else (1.0, -1.0)
-        return [np.asarray(pos) + R @ np.array([sg * (hl + p.CARRY_ARM), 0.0, 0.0])
-                for sg in signs]
-    return [center for center, _ in placed]
+    return [cp["center"] for cp in carrier_poses_lstair(pos, quat, num_carriers, outer,
+                                                        obstacles, floor_fn)]
 
 
 # ---- ボトルネック掃引 ----
@@ -476,7 +736,7 @@ def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
             for sd in seeds:
                 path = p.rrt_connect(
                     START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
-                    max_iter=max_iter, seed=sd,
+                    max_iter=max_iter, seed=sd, w_rot=W_ROT,
                     sampler=make_sampler(with_human=False), validator=state_valid)
                 if path is not None:
                     found = True
@@ -488,6 +748,61 @@ def find_max_furniture_width(outer, obstacles, lo=None, hi=None, tol=1.0,
                 hi = w
     finally:
         FURN_W = orig
+    return lo, trials
+
+
+def find_max_furniture_length(outer, obstacles, num_carriers=None, tol=2.0,
+                              max_iter=4000, seeds=(0, 1), probe_los=(130.0, 100.0, 80.0)):
+    """運搬者ありで通る最大の家具長さ(cm)を二分探索する。
+
+    find_max_furniture_widthの長さ版。あちらは「家具単体」の上限幅
+    だが、PRDの本命は「人が運ぶ前提での上限サイズ」なので、
+    こちらは運搬者ありのオラクルで探索する。詰まりの主因は長さ
+    (運搬者2人で実効長が約+100cmになる)なので、振る次元も長さにする。
+
+    二分探索には「通る」下限が要るが、運搬者ありではどの長さが通るか
+    事前に分からないため、probe_losを上から順に試して最初に通った
+    長さをloにする。どれも通らなければ(None, trials)を返す
+    (=この階段は人が運ぶ前提だと probe_los の最小値でも通らない)。
+    hiは呼び出し時点のFURN_L(メイン実行でBLOCKED確認済みの長さ)。
+    """
+    global FURN_L
+    orig = FURN_L
+    hi = FURN_L
+    trials = []
+
+    def passes(length):
+        global FURN_L
+        FURN_L = length
+        for sd in seeds:
+            path = p.rrt_connect(
+                START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
+                num_carriers=num_carriers, max_iter=max_iter, seed=sd, w_rot=W_ROT,
+                sampler=make_sampler(with_human=True), validator=state_valid)
+            if path is not None:
+                return True
+        return False
+
+    try:
+        lo = None
+        for cand in probe_los:
+            ok = passes(cand)
+            trials.append((cand, ok))
+            if ok:
+                lo = cand
+                break
+        if lo is None:
+            return None, trials
+        while hi - lo > tol:
+            m = round((lo + hi) / 2.0, 1)
+            ok = passes(m)
+            trials.append((m, ok))
+            if ok:
+                lo = m
+            else:
+                hi = m
+    finally:
+        FURN_L = orig
     return lo, trials
 
 
@@ -513,6 +828,56 @@ def best_effort_path(tree):
     return path
 
 
+def horizontal_clearance_points(points, outer, obstacles):
+    """床・天井方向を除いた「横方向の余裕」(cm)。点群の最悪値を返す。
+
+    家具は床に接して滑るため、通常のクリアランス(全方向の符号付き
+    距離)は経路上ほぼ常に0になり、「通る場合の余裕◯cm」の数字として
+    意味をなさない。ここでは各点について「同じ高さのまま水平に
+    どれだけ動かすと壁・段に当たるか」を測る:
+
+      - 障害物は、その点のzが直方体のz範囲に(端を除いて)入っている
+        場合だけ、xy平面での2D符号付き距離を数える。z範囲外の段は
+        水平移動では当たらないので無視(家具が段の上面に載っている
+        だけの接触も、z=上面ちょうどなので除外される)
+      - 外枠(合併)は、zが範囲内の直方体のxy矩形の「内側の余裕」の最大値
+
+    直方体は軸平行でも、鉛直軸(z)まわりに回転していてもよい(回り階段の
+    扇形の段を回転した直方体で組むため)。点を各直方体のローカル座標に
+    移してから同じ計算をする。z軸自体が傾いた直方体は「水平」の意味が
+    崩れるので受け付けない。
+    """
+    eps = 1e-6
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+
+    def local(c, r):
+        if not np.allclose(r[:, 2], (0.0, 0.0, 1.0)):
+            raise ValueError("horizontal_clearance_points: z軸まわり以外に回転した直方体は未対応")
+        return (pts - c) @ r   # 各行 = R^T (p - c)
+
+    inner = np.full(len(pts), -np.inf)
+    for c, r, h in outer:
+        q = local(c, r)
+        m = np.minimum(h[0] - np.abs(q[:, 0]), h[1] - np.abs(q[:, 1]))
+        inner = np.where(np.abs(q[:, 2]) <= h[2], np.maximum(inner, m), inner)
+    v = inner
+    for c, r, h in obstacles:
+        q = local(c, r)
+        qx = np.abs(q[:, 0]) - h[0]
+        qy = np.abs(q[:, 1]) - h[1]
+        d = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0)) + np.minimum(np.maximum(qx, qy), 0.0)
+        v = np.where(np.abs(q[:, 2]) < h[2] - eps, np.minimum(v, d), v)
+    return float(np.min(v))
+
+
+def path_min_horizontal_clearance(path, outer, obstacles):
+    """経路上で最も厳しい横方向の余裕(cm)と、そのインデックス(家具のみ)。"""
+    vals = [horizontal_clearance_points(furniture_points(pos, q), outer, obstacles)
+            for pos, q in path]
+    i = int(np.argmin(vals))
+    return vals[i], i
+
+
 def path_min_clearance_lstair(path, with_human, outer, obstacles, num_carriers=None):
     """経路上で最も厳しい(最小の)クリアランス(cm)とそのインデックス。"""
     vals = []
@@ -523,6 +888,44 @@ def path_min_clearance_lstair(path, with_human, outer, obstacles, num_carriers=N
             vals.append(furniture_clearance(pos, q, outer, obstacles))
     i = int(np.argmin(vals))
     return vals[i], i
+
+
+def _where_on_skeleton(s):
+    """弧長sの場所の英語ラベル(図の注記用)。踊り場ならlanding。"""
+    s_land0 = FL1_Y1
+    s_land1 = S_CORNER + (FL2_X0 - CENTER)
+    return "landing" if s_land0 <= s <= s_land1 else f"s={s:.0f}cm"
+
+
+def result_summary_lines(result):
+    """結果JSON(dict)から、図に載せる結論の1行サマリー(英語)を組み立てる。
+
+    PNG/GIF/3Dビューアが同じ数字を出すよう、出典をこのJSON一本に固定する
+    ための共通関数。まだ計算していない項目(キーが無い)は黙って省く。
+    図中の文字が英語なのはmatplotlib既定フォントの豆腐対策
+    (phase2_lstair_viz.pyのdocstring参照)。
+    """
+    lines = []
+    bn_box = result.get("bottleneck_furniture_only")
+    if bn_box:
+        lines.append(f"furniture alone: tightest at {_where_on_skeleton(bn_box['s'])}, "
+                     f"{bn_box['capacity_cm']:.1f}cm margin at best pose")
+    bn = result.get("bottleneck")
+    if bn and bn["capacity_cm"] < 0:
+        nc = result["meta"]["carrier"]["num_carriers"]
+        tilt = result["meta"]["carrier"]["max_tilt_deg"]
+        lines.append(f"with {nc} carriers: {-bn['capacity_cm']:.1f}cm short at "
+                     f"{_where_on_skeleton(bn['s'])} (best pose within {tilt:.0f} deg tilt)")
+    caps = []
+    mw = result.get("max_width_furniture_only")
+    if mw:
+        caps.append(f"alone up to W={mw['max_w']:.0f}cm")
+    ml = result.get("max_length_with_carriers")
+    if ml and ml.get("max_l") is not None:
+        caps.append(f"carried by {ml['num_carriers']} up to L={ml['max_l']:.0f}cm")
+    if caps:
+        lines.append("max furniture size for this staircase: " + " / ".join(caps))
+    return lines
 
 
 def _path_to_json(path):
@@ -539,8 +942,8 @@ def result_meta(num_carriers, max_iter, seed):
         "carrier": {"r": p.HUMAN_R, "height": p.HUMAN_HEIGHT, "arm": p.CARRY_ARM,
                     "leg_clear": LEG_CLEAR,
                     "reach": [REACH_MIN, REACH_MAX], "max_tilt_deg": MAX_TILT_DEG,
-                    "num_carriers": num_carriers},
-        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": p.W_ROT},
+                    "num_carriers": num_carriers, **body_meta()},
+        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": W_ROT},
     }
 
 
@@ -557,6 +960,13 @@ if __name__ == "__main__":
     parser.add_argument("--find-max-width", action="store_true",
                         help="家具単体で通る最大の家具幅を二分探索し、"
                              "既存の結果JSONに追記して終了する")
+    parser.add_argument("--find-max-length", action="store_true",
+                        help="運搬者ありで通る最大の家具長さを二分探索し、"
+                             "既存の結果JSONに追記して終了する")
+    parser.add_argument("--sweep-box", action="store_true",
+                        help="家具単体のボトルネック掃引(通る場合の「最も狭い"
+                             "場所で余裕◯cm」)を実行し、既存の結果JSONに追記して"
+                             "終了する")
     parser.add_argument("--out", default=os.path.join("results", "lstair_result.json"))
     args = parser.parse_args()
     num_carriers = args.carriers
@@ -587,6 +997,60 @@ if __name__ == "__main__":
         print(f"updated {args.out}")
         sys.exit(0)
 
+    if args.sweep_box:
+        import sys
+        with open(args.out) as f:
+            result = json.load(f)
+        # 通る場合の「余裕◯cm」は、RRTが見つけた生の経路から取ると
+        # ほぼ常に0になる(経路は壁や床ギリギリを掠めて通るため。床に
+        # 接して滑る分だけでも0)。ユーザーに見せる余裕は「その場所で
+        # 一番良い姿勢を取ったときの余裕」なので、運搬者ありの
+        # ボトルネックと同じ掃引を家具単体でも行う。
+        print("\nボトルネック掃引(家具単体、中心線に沿って)...")
+        t0 = time.time()
+        sweep = sweep_capacity(outer, obstacles, with_human=False)
+        s_min, c_min, pose_min = min(sweep, key=lambda r: r[1])
+        print(f"  最も狭い位置: 弧長 s={s_min:.0f}cm, 最良姿勢での余裕={c_min:.1f}cm "
+              f"[{time.time() - t0:.0f}s]")
+        result["bottleneck_furniture_only"] = {
+            "s": float(s_min), "capacity_cm": float(c_min),
+            "xy": list(map(float, skeleton_xy(s_min))),
+            "pose": pose_min,
+            "profile": [[float(s), float(c)] for s, c, _ in sweep],
+        }
+        with open(args.out, "w") as f:
+            json.dump(result, f, indent=1)
+        print(f"updated {args.out}")
+        sys.exit(0)
+
+    if args.find_max_length:
+        import sys
+        with open(args.out) as f:
+            result = json.load(f)
+        print(f"\n運搬者{num_carriers}人で通る最大長さを二分探索中"
+              "(1回のRRTに数十秒〜数分かかる)...")
+        t0 = time.time()
+        max_l, trials = find_max_furniture_length(
+            outer, obstacles, num_carriers=num_carriers, max_iter=args.max_iter)
+        for l, ok in trials:
+            print(f"  長さ{l:5.1f}cm: {'PASS' if ok else 'BLOCKED'}")
+        if max_l is None:
+            print(f"  -> どの試行長さでも通らなかった [{time.time() - t0:.0f}s]")
+        else:
+            print(f"  -> この階段なら(幅{FURN_W:.0f}・高さ{FURN_H:.0f}の家具を"
+                  f"{num_carriers}人で運ぶ前提で)長さ{max_l:.0f}cmまで入る "
+                  f"[{time.time() - t0:.0f}s]")
+        result["max_length_with_carriers"] = {
+            "max_l": None if max_l is None else float(max_l),
+            "num_carriers": num_carriers,
+            "trials": [[float(l), bool(ok)] for l, ok in trials],
+            "note": "RRT2seedsで見つかればPASS。確率的探索なので下振れし得る",
+        }
+        with open(args.out, "w") as f:
+            json.dump(result, f, indent=1)
+        print(f"updated {args.out}")
+        sys.exit(0)
+
     for label, (pos, quat) in (("START", START), ("GOAL", GOAL)):
         bc = furniture_clearance(pos, quat, outer, obstacles)
         cc, _ = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers)
@@ -598,7 +1062,7 @@ if __name__ == "__main__":
     t0 = time.time()
     path_box, tree_box = p.rrt_connect(
         START, GOAL, with_human=False, outer=outer, obstacles=obstacles,
-        max_iter=args.max_iter, seed=args.seed,
+        max_iter=args.max_iter, seed=args.seed, w_rot=W_ROT,
         sampler=make_sampler(with_human=False), validator=state_valid, return_trees=True)
     dt_box = time.time() - t0
     if path_box is not None:
@@ -615,7 +1079,7 @@ if __name__ == "__main__":
     t0 = time.time()
     path_h, tree_h = p.rrt_connect(
         START, GOAL, with_human=True, outer=outer, obstacles=obstacles,
-        num_carriers=num_carriers, max_iter=args.max_iter, seed=args.seed,
+        num_carriers=num_carriers, max_iter=args.max_iter, seed=args.seed, w_rot=W_ROT,
         sampler=make_sampler(with_human=True), validator=state_valid, return_trees=True)
     dt_h = time.time() - t0
     if path_h is not None:
@@ -642,10 +1106,14 @@ if __name__ == "__main__":
         if c_min < 0:
             print(f"  -> この位置では、傾き{MAX_TILT_DEG:.0f}度以内のどの姿勢でも"
                   f"あと{-c_min:.1f}cm足りない(姿勢グリッドの範囲で)")
+        bd = clearance_breakdown(np.array(pose_min[0]), np.array(pose_min[1]),
+                                 outer, obstacles, num_carriers)
+        print("  " + format_breakdown(bd))
         result["bottleneck"] = {
             "s": float(s_min), "capacity_cm": float(c_min),
             "xy": list(map(float, skeleton_xy(s_min))),
             "pose": pose_min,
+            "breakdown": bd,
             "profile": [[float(s), float(c)] for s, c, _ in sweep],
         }
 
