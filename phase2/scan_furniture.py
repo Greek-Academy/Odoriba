@@ -147,7 +147,7 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1), num_carriers=0):
                 return True
             # 運搬者あり: L字階段のオラクルと同じ保持拘束(家具の距離だけ
             # スキャン点群に差し替え)。傾き上限・人が床に立つ・手が届く。
-            if L.with_tilt_violation(quat):
+            if L.with_tilt_violation(quat, num_carriers):
                 return False
             for off in L.p.SIDE_OFFSETS:
                 placed = L.place_humans_lstair(pos, quat, off, num_carriers)
