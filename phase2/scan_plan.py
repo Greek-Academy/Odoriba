@@ -43,7 +43,7 @@ def make_sampler(space, with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=
     - 確率(1 - p_guided)では空間全体から完全ランダム
     """
     cl = space.centerline
-    max_pitch = L.MAX_TILT_DEG if with_human else 92.0
+    max_pitch = (L.max_tilt_deg() or 0.0) if with_human else 92.0
     lo = space.lo
     hi = space.lo + np.array(space.shape) * space.h
 
@@ -95,9 +95,11 @@ def sweep_capacity(space, num_carriers=None, ds=15.0, with_human=True, max_pitch
     [(s, capacity_cm, best_pose), ...] を返す。phase2_lstair.sweep_capacity の
     中心線版(姿勢グリッドの考え方は同じ)。"""
     cl = space.centerline
-    if max_pitch is None:
-        max_pitch = L.MAX_TILT_DEG if with_human else 90.0
-    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    grid = (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0)
+    if max_pitch is not None:
+        pitches = [t for t in grid if t <= max_pitch]
+    else:
+        pitches = L.tilt_pitches(grid, num_carriers) if with_human else list(grid)
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
     # 端に近すぎるsは、家具+運搬者の列が出発点・目的地の先(スキャンした

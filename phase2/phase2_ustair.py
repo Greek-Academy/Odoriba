@@ -248,7 +248,7 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
       家具単体は垂直近くまで「立てて回す」解を重点的に撒く
     - 確率(1 - p_guided)では完全ランダム(誘導が思いつかない解への保険)
     """
-    max_pitch = L.MAX_TILT_DEG if with_human else 92.0
+    max_pitch = (L.max_tilt_deg() or 0.0) if with_human else 92.0
 
     def sampler(rng):
         if rng.random() >= p_guided:
@@ -307,8 +307,8 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True
     capacityが負の位置は「サンプルした姿勢のどれをとっても|capacity| cm
     足りない」ことを意味する(姿勢グリッドの解像度の範囲で)。
     """
-    max_pitch = L.MAX_TILT_DEG if with_human else 90.0
-    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    grid = (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0)
+    pitches = L.tilt_pitches(grid, num_carriers) if with_human else list(grid)
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
     corner_yaws = tuple(np.arange(-90.0, 90.0 + 1e-9, 22.5))

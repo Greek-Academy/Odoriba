@@ -102,7 +102,7 @@ class MeshEnv:
         """
         if not with_human:
             return self.furniture_clearance(pos, quat) >= 0
-        if L.with_tilt_violation(quat):
+        if L.with_tilt_violation(quat, num_carriers):
             return False
         if self.furniture_clearance(pos, quat) < 0:
             return False

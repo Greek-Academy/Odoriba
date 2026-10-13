@@ -10,3 +10,4 @@ phase2/*.html
 phase2/*.obj
 phase2/*.glb
 demo/
+.pytest_cache/

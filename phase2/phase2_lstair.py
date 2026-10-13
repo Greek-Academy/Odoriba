@@ -95,6 +95,21 @@ FURN_H = 65.0    # 高さ
 REACH_MIN = 10.0      # 把持点は足元からこれ以上の高さ(床すれすれは持てない)
 REACH_MAX = 190.0     # 把持点は足元からこれ以下の高さ(手を上げて届く上限)
 MAX_TILT_DEG = 55.0   # 運搬時の長軸の仰角の上限(静的保持可能性の簡略版)
+
+# 重さ(静的保持可能性の、傾き上限より一段詳しい版)。
+# FURN_WEIGHT_KG を与えると、固定の MAX_TILT_DEG をやめて「下側の人の負担が
+# 1人で支えられる上限を超えない傾き」までを許す。家具を傾けると重心が下側の
+# 人へ寄るため、重い家具ほど寝かせて運ぶしかなくなる。None なら従来どおり
+# MAX_TILT_DEG の固定値で判定する(既定。基準値の回帰テストはこちら)。
+FURN_WEIGHT_KG = None
+# 重心の位置(家具ローカル座標、中心からのずれcm)。冷蔵庫のように下が重い
+# 家具は z を負にする。
+COM_OFFSET = (0.0, 0.0, 0.0)
+# 1人で支えられる重さの上限(kg)。どちらも仮値で、ヒアリングで差し替える。
+#   mover: 引っ越し業者。大型冷蔵庫(100kg前後)を2人で運ぶのが普通
+#   diy:   自分たちで運ぶ。厚労省の腰痛予防指針の目安(男性で体重の約40%)
+CARRIER_PRESETS = {"mover": 40.0, "diy": 25.0}
+CARRIER_PRESET = "mover"
 # 運搬者カプセルの下端は足元の床からこの高さより上だけを占有として扱う。
 # 床から全身を円柱にすると、階段では下端が必ず隣の一段高い段(蹴上げ17cm)
 # に食い込んで「人は階段に立てない」ことになってしまう。下腿は細く
@@ -403,7 +418,7 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
       では傾き上限を超えるサンプルは無駄になるだけなので上限で切る)
     - 確率(1 - p_guided)では完全ランダム(誘導が思いつかない解への保険)
     """
-    max_pitch = MAX_TILT_DEG if with_human else 92.0
+    max_pitch = (max_tilt_deg() or 0.0) if with_human else 92.0
 
     def sampler(rng):
         if rng.random() >= p_guided:
@@ -493,7 +508,7 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
     評価され、掃引の最良姿勢に選ばれていた。通る/通らないだけを知りたい
     RRTの判定(state_valid)は、家具の余裕が負なら先に打ち切る。
     """
-    if with_tilt_violation(quat):
+    if with_tilt_violation(quat, num_carriers):
         return -np.inf, None
     bc = furniture_clearance(pos, quat, outer, obstacles)
     best = -np.inf
@@ -518,8 +533,97 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
     return best, best_offset
 
 
-def with_tilt_violation(quat):
-    return tilt_deg(quat) > MAX_TILT_DEG
+def with_tilt_violation(quat, num_carriers=None):
+    """この傾きでは持てないか。
+
+    重さを与えていなければ固定の傾き上限、与えていれば下側の人の負担で判定する。
+    """
+    if FURN_WEIGHT_KG is None:
+        return tilt_deg(quat) > MAX_TILT_DEG
+    return max(carrier_loads_kg(quat, num_carriers)) > load_limit_kg() + 1e-9
+
+
+def load_limit_kg():
+    """1人で支えられる重さの上限(kg)。CARRIER_PRESET で選ぶ。"""
+    return CARRIER_PRESETS[CARRIER_PRESET]
+
+
+def _support_point(R, sign):
+    """運搬者が家具を支える点(家具中心からの相対位置、ワールド座標)。
+
+    家具の端面の4辺の中点のうち一番低いもの = 端面の下側の辺を下から
+    支える、とする。横倒し(ロール)でも「下になった辺」を選ぶ。
+    """
+    hl, hw, hh = FURN_L / 2, FURN_W / 2, FURN_H / 2
+    cands = [R @ np.array([sign * hl, y, z])
+             for y, z in ((0.0, hh), (0.0, -hh), (hw, 0.0), (-hw, 0.0))]
+    return min(cands, key=lambda v: v[2])
+
+
+def carrier_loads_kg(quat, num_carriers=None):
+    """運搬者1人ずつの負担(kg)。順番は _carrier_signs と同じ。
+
+    重さを与えていなければ 0。1人なら全部をその人が持つ。2人なら、
+    支える2点と重心を水平面に落とし、てこのつり合いで重さを分ける。
+    重心の真下が支える2点の外側に出る(家具をほぼ垂直に立てた)ときは、
+    下側の人が全部を持ち、上側の人は倒れないよう添えるだけとする。
+    """
+    num_carriers = p.NUM_CARRIERS if num_carriers is None else num_carriers
+    if FURN_WEIGHT_KG is None:
+        return [0.0] * (1 if num_carriers == 1 else 2)
+    w = float(FURN_WEIGHT_KG)
+    if num_carriers == 1:
+        return [w]
+    R = g3.rotmat_from_quat(quat)
+    com = R @ np.asarray(COM_OFFSET, dtype=float)
+    g1, g2 = (_support_point(R, sg) for sg in _carrier_signs(2))
+    d = (g1 - g2)[:2]
+    span = float(np.linalg.norm(d))
+    if span < 1e-6:
+        lower_first = g1[2] <= g2[2]
+        return [w, 0.0] if lower_first else [0.0, w]
+    # g1が持つ割合 = 重心からg2までの水平距離 / 支点間の水平距離
+    frac1 = float(np.clip(np.dot((com - g2)[:2], d) / span ** 2, 0.0, 1.0))
+    return [w * frac1, w * (1.0 - frac1)]
+
+
+def max_tilt_deg(num_carriers=None):
+    """運搬者ありで許す長軸の傾きの上限(度)。掃引・サンプラーの範囲に使う。
+
+    重さを与えていなければ MAX_TILT_DEG。与えていれば、ロールなしで傾けたとき
+    下側の人の負担が上限に収まる最大の角度(負担は傾きとともに増えるので
+    二分探索)。水平でも持てない重さなら None(どの姿勢でも運べない)。
+    """
+    if FURN_WEIGHT_KG is None:
+        return MAX_TILT_DEG
+
+    def ok(t):
+        return max(carrier_loads_kg(_pose(0.0, t).as_quat(), num_carriers)) \
+            <= load_limit_kg() + 1e-9
+    if not ok(0.0):
+        return None
+    if ok(90.0):
+        return 90.0
+    lo, hi = 0.0, 90.0
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if ok(mid) else (lo, mid)
+    return lo
+
+
+def tilt_pitches(grid, num_carriers=None):
+    """掃引の姿勢グリッドのピッチを、運搬者ありの傾き上限で切ったもの。
+
+    上限が格子の間にあるときは上限そのものも足す(一番傾けた姿勢を見落とさない)。
+    重さなしの既定(55度)は格子に含まれるので、従来の掃引と同じ結果になる。
+    """
+    cap = max_tilt_deg(num_carriers)
+    if cap is None:
+        return []
+    out = [t for t in grid if t <= cap + 1e-9]
+    if cap not in out and cap < max(grid):
+        out.append(cap)
+    return sorted(out)
 
 
 # 可搬性オラクルの項を個別に外すスイッチ。通常は全部True のまま使う。
@@ -536,6 +640,7 @@ BREAKDOWN_LABELS = {
     "reach": "手が届かない(持つ高さ)",
     "no_floor": "運搬者の立つ床がない",
     "tilt": "傾き上限を超える",
+    "load": "重すぎる(下側の人の負担が上限を超える)",
 }
 
 
@@ -550,6 +655,12 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
     bd = {"furniture": float(furniture_clearance(pos, quat, outer, obstacles)),
           "carrier_body": None, "carrier_self": None, "reach": None,
           "tilt_deg": tilt_deg(quat), "max_tilt_deg": float(MAX_TILT_DEG)}
+    if FURN_WEIGHT_KG is not None:
+        cap = max_tilt_deg(num_carriers)
+        bd.update(weight_kg=float(FURN_WEIGHT_KG), load_limit_kg=load_limit_kg(),
+                  carrier_preset=CARRIER_PRESET,
+                  loads_kg=carrier_loads_kg(quat, num_carriers),
+                  max_tilt_deg=0.0 if cap is None else float(cap))
     best = -np.inf
     for off in p.SIDE_OFFSETS:
         placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
@@ -568,7 +679,9 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
             best = score
             bd["carrier_body"], bd["carrier_self"] = float(body), float(selfc)
             bd["reach"] = float(reach)
-    if bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
+    if FURN_WEIGHT_KG is not None and with_tilt_violation(quat, num_carriers):
+        bd["limiting"] = "load"
+    elif FURN_WEIGHT_KG is None and bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
         bd["limiting"] = "tilt"
     elif bd["carrier_body"] is None:
         bd["limiting"] = "no_floor" if bd["furniture"] >= 0 else "furniture"
@@ -589,8 +702,12 @@ def format_breakdown(bd):
             f"体と家具{cm(bd.get('carrier_self'))} / "
             f"手の届く範囲{cm(bd['reach'])} / 傾き{bd['tilt_deg']:.0f}度"
             f"(上限{bd['max_tilt_deg']:.0f}) -> 決め手: {BREAKDOWN_LABELS[bd['limiting']]}")
+    if "loads_kg" in bd:
+        line += (f" / 負担{max(bd['loads_kg']):.0f}kg(重さ{bd['weight_kg']:.0f}kg、"
+                 f"1人{bd['load_limit_kg']:.0f}kgまで)")
     if bd["max_tilt_deg"] - bd["tilt_deg"] < 0.5:
-        line += "(傾きが上限に張り付いている)"
+        line += ("(重さで決まる傾きの上限に張り付いている)" if "loads_kg" in bd
+                 else "(傾きが上限に張り付いている)")
     return line
 
 
@@ -663,9 +780,13 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0,
     範囲で。Phase 1のresolution-completeと同じ但し書き)。
     ボトルネック = capacityが最小の位置。
     """
-    if max_pitch is None:
-        max_pitch = MAX_TILT_DEG if with_human else 90.0
-    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    grid = (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0)
+    if max_pitch is not None:
+        pitches = [t for t in grid if t <= max_pitch]
+    elif with_human:
+        pitches = tilt_pitches(grid, num_carriers)
+    else:
+        pitches = [t for t in grid if t <= 90.0]
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
 
@@ -804,6 +925,53 @@ def find_max_furniture_length(outer, obstacles, num_carriers=None, tol=2.0,
     finally:
         FURN_L = orig
     return lo, trials
+
+
+def find_needed_tilt(passes, tol=1.0):
+    """通るのに必要な最小の傾き上限(度)を二分探索する。90度でも通らなければNone。
+
+    passes() は現在の設定で「通る」かを返す関数(掃引の最小余裕>=0 など)。
+    重さを外し、MAX_TILT_DEG を一時的に変えながら呼ぶ。傾き上限を広げるほど
+    許される姿勢は増えるので、通る/通らないは上限について単調。
+    ここで求めた角度は重さに依存しないので、重さの上限は weight_limit_kg で
+    プリセットごとに換算できる(掃引をプリセットの数だけ回さずに済む)。
+    """
+    global FURN_WEIGHT_KG, MAX_TILT_DEG
+    orig = (FURN_WEIGHT_KG, MAX_TILT_DEG)
+    try:
+        FURN_WEIGHT_KG = None
+
+        def ok(cap):
+            global MAX_TILT_DEG
+            MAX_TILT_DEG = cap
+            return passes()
+        if not ok(90.0):
+            return None
+        if ok(0.0):
+            return 0.0
+        lo, hi = 0.0, 90.0
+        while hi - lo > tol:
+            mid = (lo + hi) / 2
+            lo, hi = (lo, mid) if ok(mid) else (mid, hi)
+        return hi
+    finally:
+        FURN_WEIGHT_KG, MAX_TILT_DEG = orig
+
+
+def weight_limit_kg(tilt, num_carriers=None, preset=None):
+    """傾き tilt(度、ロールなし)まで傾けても下側の人が支えきれる最大の重さ(kg)。
+
+    1人なら傾きに関係なく1人の上限そのもの。2人なら上限 / 下側の人の割合。
+    """
+    global FURN_WEIGHT_KG
+    limit = CARRIER_PRESETS[preset or CARRIER_PRESET]
+    orig = FURN_WEIGHT_KG
+    try:
+        FURN_WEIGHT_KG = 1.0
+        frac = max(carrier_loads_kg(_pose(0.0, tilt).as_quat(), num_carriers))
+    finally:
+        FURN_WEIGHT_KG = orig
+    return limit / frac
 
 
 # ---- START / GOAL ----
