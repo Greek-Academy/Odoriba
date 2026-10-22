@@ -22,14 +22,12 @@
 ## 何が動くか（Phase 2 の到達点）
 1. 仮想L字階段の判定: `phase2_lstair.py`（環境=SDF直方体の合併、可搬性オラクル、RRT-Connect）
    - 出力: 通る/通らない、ボトルネック掃引で「あと何cm」、上限サイズ二分探索（幅/長さ）
-   - 可視化: `phase2_lstair_viz.py`(PNG)、`_gif.py`(GIF)、`_3d.py`(plotly HTML)
-2. 数値から仮想階段を組んで家具を通す: `virtual_demo.py`
-   - 例: `python virtual_demo.py --width 90 --rise 18 --tread 25 --steps 8 --furniture 150 45 40 --carriers 2 --html out.html`
+   - 可視化: `phase2_lstair_3d.py`(plotly HTML)
+2. （欠番）数値から仮想階段を組むデモ `virtual_demo.py` は 2026-10-23 に削除。`stair_report.py --width ...` で同じ寸法指定ができる
 3. スキャン取り込み系（iPhone LiDAR / Scaniverse で撮ったOBJ）:
-   - `scan_ingest.py`: 単位推定・穴埋め・水密化ロジック（`to_free_space_voxel`）
-   - `scan_furniture.py`: 家具スキャンを切り出して（床除去）通過判定＋3D/GIF可視化
+   - `scan_ingest.py`: 読み込み（`load_scan_zup`）・単位推定・穴埋め・水密化ロジック（`to_free_space_voxel`）
    - `measure_stairs.py`: 階段スキャンから寸法計測（蹴上げ/踏み面/幅/段数/天井）
-   - `scan_demo.py` / `scan_combined.py` / `scan_babylon.py`: 実スキャンの可視化（点群/面/Babylon）
+   - 第1世代の可視化デモ（`scan_demo` / `scan_combined` / `scan_babylon` / `scan_furniture`）は 2026-10-23 に削除。下の 7 が後継
 4. あなたの階段への答えレポート: `stair_report.py`
    - `python stair_report.py --measure-stair stair.obj --quick`（掃引のみ・速い）
 5. 定番家具カタログ一斉判定: `catalog.py`（重い。普段は1家具ずつでよい）
