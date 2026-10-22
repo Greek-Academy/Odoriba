@@ -1,11 +1,11 @@
 """ボトルネック掃引の基準値の回帰テスト。
 
 オラクルの変更で「あと何cm」が黙って変わるのを防ぐ。値は docs/decisions.md
-(2026-10-10, 体と家具の干渉を足した後)の表と同じ。家具200x50x65cm、
+(2026-10-13, 立つ距離を姿勢ごとに選ぶようにした後)と同じ。家具200x50x65cm、
 運搬者2人、刻み15cmの掃引。意図して値を変えたときは、decisions.md に理由を
 書いてからここを更新する。
 
-実行(リポジトリの phase2/ で): python -m pytest tests  (1分ほどかかる)
+実行(リポジトリの phase2/ で): python -m pytest tests  (3分ほどかかる)
 """
 
 import numpy as np
@@ -17,9 +17,9 @@ import phase2_winder as W
 
 # (名前, 環境を作る関数, 掃引関数, 家具単体の最小余裕, 運搬者2人の最小余裕)
 CASES = [
-    ("lstair", L.build_lstairs, L.sweep_capacity, 8.0, -32.9),
-    ("ustair", U.build_ustairs, U.sweep_capacity, 8.8, -32.9),
-    ("winder", W.build_winder, W.sweep_capacity, 5.3, -28.9),
+    ("lstair", L.build_lstairs, L.sweep_capacity, 8.0, -32.15),
+    ("ustair", U.build_ustairs, U.sweep_capacity, 8.8, -32.15),
+    ("winder", W.build_winder, W.sweep_capacity, 5.3, -32.15),
 ]
 
 
