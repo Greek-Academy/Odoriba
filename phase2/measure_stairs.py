@@ -14,7 +14,29 @@
 
 import numpy as np
 
-import scan_demo as sd
+import scan_ingest as si
+
+
+def centerline(mesh, band=30.0, step=25.0, smooth=3):
+    """高さ帯ごとの水平重心をつないで、階段の中心線(下から上への経路)を
+    近似する。戻り値: (N,3)の点列(cm, Z昇順)。
+
+    スキャンはノイズや飛び点があるので、移動平均で軽く滑らかにする。
+    """
+    v = np.asarray(mesh.vertices)
+    zmin, zmax = v[:, 2].min(), v[:, 2].max()
+    pts = []
+    for z in np.arange(zmin + band, zmax - band, step):
+        b = v[(v[:, 2] >= z - band / 2) & (v[:, 2] < z + band / 2)]
+        if len(b) < 50:
+            continue
+        pts.append([b[:, 0].mean(), b[:, 1].mean(), z])
+    pts = np.array(pts)
+    if smooth > 1 and len(pts) >= smooth:
+        k = np.ones(smooth) / smooth
+        for c in (0, 1):  # x, y だけ平滑化(高さzはそのまま)
+            pts[:, c] = np.convolve(pts[:, c], k, mode="same")
+    return pts
 
 
 def measure(path, assume_units=None):
@@ -26,7 +48,7 @@ def measure(path, assume_units=None):
 
     戻り値キー: rise, tread, width, n_steps_total, total_height, confidence
     """
-    m, _ = sd.load_scan_zup(path, assume_units)
+    m, _ = si.load_scan_zup(path, assume_units)
     v = np.asarray(m.vertices)
     f = np.asarray(m.faces)
     n = np.asarray(m.face_normals)
@@ -88,7 +110,7 @@ def measure(path, assume_units=None):
     width = float(np.median(widths)) if widths else 90.0
 
     # --- 天井(頭上クリアランス): 中心線の各柱で、歩行面と真上の構造の隙間 ---
-    line = sd.centerline(m)
+    line = centerline(m)
     gaps = []
     for x, y, zc in line:
         col = v[np.hypot(v[:, 0] - x, v[:, 1] - y) < 25]
