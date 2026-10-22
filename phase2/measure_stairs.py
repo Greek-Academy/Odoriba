@@ -2,7 +2,7 @@
 スキャンした階段から寸法(蹴上げ・踏み面・幅・段数)を計測する。
 
 スキャンは「見た目」ではなく「数値の計測」に使う、という方針の実装。
-ここで得た寸法を virtual_demo / phase2_lstair.configure に渡せば、
+ここで得た寸法を stair_report / phase2_lstair.configure に渡せば、
 きれいな仮想階段を実データ準拠の寸法で組める。
 
 信頼度の目安(この単一スキャンでの実測):
@@ -155,4 +155,4 @@ if __name__ == "__main__":
     print(f"  総高 total       = {r['total_height']} cm")
     print(f"  段数(全体)       = {r['n_steps_total']} (2フライトなら各 {r['n_steps_total']//2})")
     print("注意: 踏み面・幅は水平面(踏み面)のみから計測して改善済みだが、"
-          "スキャンのノイズで数cmの誤差は残る。virtual_demoで--tread/--width上書き可。")
+          "スキャンのノイズで数cmの誤差は残る。stair_reportで--tread/--width上書き可。")

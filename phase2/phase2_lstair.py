@@ -303,7 +303,7 @@ def carrier_points(center):
 
 # 運搬者の体の判定モデル。"humanoid"(既定)は human_figure の人型
 # (横幅=肩幅40cm、前後=胴の厚み24cm、腕・頭・膝上の脚)、"cylinder" は
-# 従来の円柱(carrier_points)。感度分析(sensitivity.py)で新旧を比べるために残す。
+# 従来の円柱(carrier_points)。感度分析で新旧を比べるために残す。
 BODY_MODEL = "humanoid"
 # 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
 HAND_HALF_SPREAD = 18.0
@@ -627,7 +627,8 @@ def tilt_pitches(grid, num_carriers=None):
 
 
 # 可搬性オラクルの項を個別に外すスイッチ。通常は全部True のまま使う。
-# 「どの仮定を外すと不足量が何cm変わるか」を測る感度分析(sensitivity.py)専用。
+# 「どの仮定を外すと不足量が何cm変わるか」を測る感度分析用(sensitivity.py は
+# 削除済み。タグ exhibit-festival-2026 から戻せる)。
 # 傾き上限は項ではなく MAX_TILT_DEG の値そのものを変えて調べる。
 # "self" は運搬者の体と家具自身の干渉(carrier_furniture_clearance)。
 ORACLE_TERMS = {"reach": True, "body": True, "self": True}
@@ -1068,10 +1069,9 @@ def _where_on_skeleton(s):
 def result_summary_lines(result):
     """結果JSON(dict)から、図に載せる結論の1行サマリー(英語)を組み立てる。
 
-    PNG/GIF/3Dビューアが同じ数字を出すよう、出典をこのJSON一本に固定する
+    図・3Dビューアが同じ数字を出すよう、出典をこのJSON一本に固定する
     ための共通関数。まだ計算していない項目(キーが無い)は黙って省く。
-    図中の文字が英語なのはmatplotlib既定フォントの豆腐対策
-    (phase2_lstair_viz.pyのdocstring参照)。
+    文字が英語なのはmatplotlib既定フォントの豆腐対策の名残。
     """
     lines = []
     bn_box = result.get("bottleneck_furniture_only")
