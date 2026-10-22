@@ -72,6 +72,25 @@ def guess_units_scale(mesh, assume=None):
     return 1.0, "cm(推定)"
 
 
+def load_scan_zup(path, assume_units=None):
+    """スキャンOBJを読み、cmに正規化し、Z-upに軸合わせして原点を揃える。
+
+    Scaniverseは重力方向がY軸。本プロジェクトは高さがZ軸なので、
+    Y->Z, Z->-Y の入れ替え(X軸まわり-90度)で立てる。
+    戻り値: (mesh_cm_zup, info)
+    """
+    m = load_mesh(path)
+    scale, unit_label = guess_units_scale(m, assume_units)
+    m.apply_scale(scale)
+    # Y-up -> Z-up
+    R = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    m.apply_transform(R)
+    # 原点を最小コーナーに揃える(座標を正の領域に置く)
+    m.apply_translation(-m.bounds[0])
+    info = {"unit_label": unit_label, "extents_cm": [float(e) for e in m.extents]}
+    return m, info
+
+
 def diagnose(mesh, label="mesh"):
     """メッシュの診断を表示して、要点をdictで返す。"""
     ext = mesh.bounding_box.extents

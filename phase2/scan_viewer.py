@@ -159,8 +159,8 @@ def main():
     else:
         if not args.mesh:
             parser.error("mesh を指定する(または --route)")
-        import scan_demo as SD
-        mesh, _ = SD.load_scan_zup(args.mesh)
+        import scan_ingest as SI
+        mesh, _ = SI.load_scan_zup(args.mesh)
         start, goal = args.start, args.goal
         if args.seed:
             seed = args.seed
