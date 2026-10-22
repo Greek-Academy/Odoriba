@@ -149,8 +149,8 @@ def judge_in_lstair(furn, max_iter=3000, seeds=(0, 1), num_carriers=0):
             # スキャン点群に差し替え)。傾き上限・人が床に立つ・手が届く。
             if L.with_tilt_violation(quat, num_carriers):
                 return False
-            for off in L.p.SIDE_OFFSETS:
-                placed = L.place_humans_lstair(pos, quat, off, num_carriers)
+            for off, arm in L.grip_choices():
+                placed = L.place_humans_lstair(pos, quat, off, num_carriers, carry_arm=arm)
                 if placed is None:
                     continue
                 # 体と家具の干渉は、スキャン家具の外接直方体(dims)で測る
