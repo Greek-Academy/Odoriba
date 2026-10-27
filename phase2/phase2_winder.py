@@ -272,7 +272,7 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
     誘導する中心高さを回り段の歩行面から取る(L字の平らな踊り場の
     高さのままだと、角のサンプルが段にめり込んで無駄になる)。
     """
-    max_pitch = L.MAX_TILT_DEG if with_human else 92.0
+    max_pitch = (L.max_tilt_deg() or 0.0) if with_human else 92.0
 
     def sampler(rng):
         if rng.random() >= p_guided:
@@ -328,8 +328,8 @@ def sweep_capacity(outer, obstacles, num_carriers=None, ds=15.0, with_human=True
     クリアランス(cm)を返す: [(s, capacity_cm, best_pose), ...]。
     L.sweep_capacityの回り階段版(姿勢グリッドの考え方は同じ)。
     """
-    max_pitch = L.MAX_TILT_DEG if with_human else 90.0
-    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    grid = (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0)
+    pitches = L.tilt_pitches(grid, num_carriers) if with_human else list(grid)
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
 
@@ -395,7 +395,7 @@ def result_meta(num_carriers, max_iter, seed):
                   "n_steps1": N_STEPS1, "n_winders": N_WINDERS, "n_steps2": N_STEPS2,
                   "base_d": BASE_D, "top_d": TOP_D, "ceil_clear": CEIL_CLEAR},
         "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
-        "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM,
+        "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM, "carry_arms": list(L.CARRY_ARMS),
                     "leg_clear": L.LEG_CLEAR,
                     "reach": [L.REACH_MIN, L.REACH_MAX], "max_tilt_deg": L.MAX_TILT_DEG,
                     "num_carriers": num_carriers, **L.body_meta()},
