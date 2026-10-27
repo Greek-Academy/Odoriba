@@ -1,6 +1,6 @@
 # 引き継ぎメモ（別セッション用） — Odoriba
 
-最終更新: 2026-10-06（スキャン空間での判定を追加）
+最終更新: 2026-10-27（持つ距離の候補を追加・搬入の経験則を調査）
 
 このファイルは「別のClaude/開発セッションに作業を引き継ぐ」ための現状まとめ。
 コードの詳細は各ファイルのdocstringとCLAUDE.md・docs/を見ること。
@@ -22,14 +22,12 @@
 ## 何が動くか（Phase 2 の到達点）
 1. 仮想L字階段の判定: `phase2_lstair.py`（環境=SDF直方体の合併、可搬性オラクル、RRT-Connect）
    - 出力: 通る/通らない、ボトルネック掃引で「あと何cm」、上限サイズ二分探索（幅/長さ）
-   - 可視化: `phase2_lstair_viz.py`(PNG)、`_gif.py`(GIF)、`_3d.py`(plotly HTML)
-2. 数値から仮想階段を組んで家具を通す: `virtual_demo.py`
-   - 例: `python virtual_demo.py --width 90 --rise 18 --tread 25 --steps 8 --furniture 150 45 40 --carriers 2 --html out.html`
+   - 可視化: `phase2_lstair_3d.py`(plotly HTML)
+2. （欠番）数値から仮想階段を組むデモ `virtual_demo.py` は 2026-10-23 に削除。`stair_report.py --width ...` で同じ寸法指定ができる
 3. スキャン取り込み系（iPhone LiDAR / Scaniverse で撮ったOBJ）:
-   - `scan_ingest.py`: 単位推定・穴埋め・水密化ロジック（`to_free_space_voxel`）
-   - `scan_furniture.py`: 家具スキャンを切り出して（床除去）通過判定＋3D/GIF可視化
+   - `scan_ingest.py`: 読み込み（`load_scan_zup`）・単位推定・穴埋め・水密化ロジック（`to_free_space_voxel`）
    - `measure_stairs.py`: 階段スキャンから寸法計測（蹴上げ/踏み面/幅/段数/天井）
-   - `scan_demo.py` / `scan_combined.py` / `scan_babylon.py`: 実スキャンの可視化（点群/面/Babylon）
+   - 第1世代の可視化デモ（`scan_demo` / `scan_combined` / `scan_babylon` / `scan_furniture`）は 2026-10-23 に削除。下の 7 が後継
 4. あなたの階段への答えレポート: `stair_report.py`
    - `python stair_report.py --measure-stair stair.obj --quick`（掃引のみ・速い）
 5. 定番家具カタログ一斉判定: `catalog.py`（重い。普段は1家具ずつでよい）
@@ -44,6 +42,12 @@
      `python scan_picker.py <スキャン.obj または Scaniverse の zip>` → http://localhost:8001。
      空間は判定のときに出発点の上を起点にして作る（約1分、以後は使い回す）
    - `scan_viewer.py`: 判定結果の3D（中心線を余裕で色分け、一番狭い所の家具と人を赤く、当たった点に印）
+
+8. **重さの判定**（2026-10-13）: `python stair_report.py --furniture 80 45 60 --weight 70 --quick`
+   - 重さを与えると、下側の人の負担が上限（業者40kg／自分たち25kg、仮値）を超えない傾きまでしか許さない
+   - 出力: 何度傾ければ通るか、そのとき下側の人に何kgかかるか、業者・自分たちそれぞれ何kgまで運べるか
+   - 重さを与えなければ従来どおり（傾き上限55度固定）
+9. **回帰テスト**: `python -m pytest tests`（phase2/ で、約1分）。L字・折り返し・回りの掃引の基準値を固定
 
 ## 重要な設計判断（触る前に知っておくこと）
 - **状態空間に人の姿勢を足さない**。6DOF(位置3+クォータニオン4)のまま、衝突判定器を
@@ -77,11 +81,20 @@
 - 左下の部屋は、撮れている範囲では壁を挟んで他とつながっていない（ドアが撮れていない可能性）
 
 ## 既知の未解決・次の候補（docs/BACKLOG.md も参照）
+- **最重要: 「2人で通せる家具が短すぎる」が未解消。** 幅90cmのL字で100×45×60cmが−2cm（持つ距離を15/30cmから選ぶようにしても数cmしか緩まず）。
+  推測で姿勢候補を足すのをやめ、正解を先に取る方針（`decisions.md` 2026-10-27）:
+  (1) 自宅の階段で長さ1m前後の箱を2人で通す実験、(2) 家具店の搬入基準との突き合わせ（調査済み。経験則は「角で縦に立てて端を床に置いて回す」で、今のオラクルにない運び方）、
+  (3) ヒアリングは数値を聞かず判定結果の図を見せて訂正してもらう形に変える
 - 螺旋・S字階段（回転OBBで環境を組む。BACKLOGの残り）
 - スキャン精度の実測突き合わせ（5cm超なら手入力に切替、というゲート）
 - 引っ越し業者ヒアリング（`docs/interview-questions.md` に質問リスト準備済み）
 - スキャン空間の判定の続き: 掃引の刻みを細かくする（「あと何cm」が2〜4cm揺れる）、
   階段の段まで写ったスキャンでの確認、大きなスキャンでの空間作成の高速化（今は約1分）
+
+## 参考文献の置き場
+- 出典ごとの要約・引用・信頼度・発表前の確認事項は、リポジトリ外の Obsidian に置いている:
+  `C:\Users\mono\OneDrive\ドキュメント\Obsidian Vault\Alpha+ Project\調査\参考文献 目次.md`（2026-10-27 作成、出典17件）。
+  docs/decisions.md には要約と URL だけを書き、引用と評価は Obsidian 側に書く
 
 ## 運用ルール（CLAUDE.md準拠）
 - Git Flow: developから `feature/<kebab>` を切り、`merge --no-ff` でdevelopへ、push。

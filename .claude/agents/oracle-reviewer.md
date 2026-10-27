@@ -21,8 +21,7 @@ Bash は `git diff` / `git log` / `git show` など、閲覧のためだけに�
 2. **項のそろい方**: `ORACLE_TERMS` に項を足したり変えたりしたとき、次がすべてそろっているか
    - `carriable_clearance_lstair`（判定と余裕）
    - `clearance_breakdown` と `BREAKDOWN_LABELS`（内訳と決め手）
-   - `mesh_env.py` と `scan_furniture.py` の validator（項を個別に並べている）
-   - `sensitivity.py` の条件
+   - `mesh_env.py` の validator（項を個別に並べている）
 3. **余裕の値の正しさ**: 余裕を返す関数が、途中で打ち切って実際より楽観的な値を返していないか。
    以前、家具が壁にちょうど触れている（−0.0cm）と運搬者の項を見ずに返していたため、何十cmも足りない姿勢が「ほぼ0cm」と評価された。
    打ち切ってよいのは、通る／通らないだけを返す判定（`state_valid` など）だけ

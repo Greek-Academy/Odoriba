@@ -285,8 +285,8 @@ def main():
         mesh = M.env_to_mesh(*R.build_route())
         mesh.invert()   # スキャンと同じ「面が自由空間側を向く」向きにする
     elif args.mesh:
-        import scan_demo as SD
-        mesh, _ = SD.load_scan_zup(args.mesh)
+        import scan_ingest as SI
+        mesh, _ = SI.load_scan_zup(args.mesh)
     else:
         parser.error("mesh を指定する(または --route)")
     app = App(mesh, args.carriers, seed=args.seed)

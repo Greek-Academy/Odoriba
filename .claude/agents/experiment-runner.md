@@ -22,7 +22,6 @@ model: sonnet
 
 | スクリプト | 内容 | 目安の時間 |
 |---|---|---|
-| `sensitivity.py` | L字・折り返し・回り階段で、オラクルの仮定を外したときの不足量の一覧。`results/sensitivity.json` に保存 | 約10〜20分 |
 | `route_env.py` | 合成の経路（玄関・廊下・曲がり角・ドア）で、正解の形とスキャン経由の判定を突き合わせる | 約2分 |
 | `phase2_lstair.py` / `phase2_ustair.py` / `phase2_winder.py` | 各階段の判定（RRT と掃引）。結果JSONを `results/` に保存 | 数分 |
 

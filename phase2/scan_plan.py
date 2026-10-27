@@ -43,7 +43,7 @@ def make_sampler(space, with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=
     - 確率(1 - p_guided)では空間全体から完全ランダム
     """
     cl = space.centerline
-    max_pitch = L.MAX_TILT_DEG if with_human else 92.0
+    max_pitch = (L.max_tilt_deg() or 0.0) if with_human else 92.0
     lo = space.lo
     hi = space.lo + np.array(space.shape) * space.h
 
@@ -95,9 +95,11 @@ def sweep_capacity(space, num_carriers=None, ds=15.0, with_human=True, max_pitch
     [(s, capacity_cm, best_pose), ...] を返す。phase2_lstair.sweep_capacity の
     中心線版(姿勢グリッドの考え方は同じ)。"""
     cl = space.centerline
-    if max_pitch is None:
-        max_pitch = L.MAX_TILT_DEG if with_human else 90.0
-    pitches = [t for t in (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0) if t <= max_pitch]
+    grid = (0.0, 15.0, 30.0, 45.0, 55.0, 70.0, 85.0, 90.0)
+    if max_pitch is not None:
+        pitches = [t for t in grid if t <= max_pitch]
+    else:
+        pitches = L.tilt_pitches(grid, num_carriers) if with_human else list(grid)
     laterals = (-10.0, 0.0, 10.0)
     z_extras = (0.0, 12.0, 30.0)
     # 端に近すぎるsは、家具+運搬者の列が出発点・目的地の先(スキャンした
@@ -148,15 +150,14 @@ def worst_contact(space, pose, with_human, num_carriers=None):
     i = int(np.argmin(fc))
     best = (fp[i], float(fc[i]), "furniture")
     if with_human and L.BODY_MODEL == "humanoid":
-        _, off = L.carriable_clearance_lstair(pos, quat, space, None, num_carriers,
-                                              floor_fn=space.floor_fn)
-        placed = L.place_humans_lstair(pos, quat, 0.0 if off is None else off,
-                                       num_carriers, space.floor_fn)
+        _, grip = L.carriable_clearance_lstair(pos, quat, space, None, num_carriers,
+                                               floor_fn=space.floor_fn)
+        off, arm = (0.0, L.p.CARRY_ARM) if grip is None else grip
+        placed = L.place_humans_lstair(pos, quat, off, num_carriers, space.floor_fn, arm)
         if placed is not None:
             R = g3.rotmat_from_quat(quat)
             for sign, (center, _) in zip(L._carrier_signs(len(placed)), placed):
-                floor, facing, hands = L._carrier_frame(pos, R, sign,
-                                                        0.0 if off is None else off, center)
+                floor, facing, hands = L._carrier_frame(pos, R, sign, off, center)
                 for pts, r in hf.body_parts(center[:2], floor, facing, hands, L.LEG_CLEAR):
                     c = space.clearance_points(pts) - r
                     j = int(np.argmin(c))
@@ -205,7 +206,8 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
     result = {"meta": {"centerline_length": cl.s_total,
                        "corners": [list(c) for c in cl.corners],
                        "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
-                       "carrier": {"num_carriers": num_carriers, **L.body_meta()},
+                       "carrier": {"num_carriers": num_carriers, "carry_arms": list(L.CARRY_ARMS),
+                                   **L.body_meta()},
                        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": L.W_ROT}}}
     for key, with_human in ((("box_only", False), ("with_carriers", True)) if rrt else ()):
         path, tree = p.rrt_connect(

@@ -102,12 +102,12 @@ class MeshEnv:
         """
         if not with_human:
             return self.furniture_clearance(pos, quat) >= 0
-        if L.with_tilt_violation(quat):
+        if L.with_tilt_violation(quat, num_carriers):
             return False
         if self.furniture_clearance(pos, quat) < 0:
             return False
-        for off in L.p.SIDE_OFFSETS:
-            placed = L.place_humans_lstair(pos, quat, off, num_carriers)
+        for off, arm in L.grip_choices():
+            placed = L.place_humans_lstair(pos, quat, off, num_carriers, carry_arm=arm)
             if placed is None:
                 continue
             ok = (all(reach >= 0 for _, reach in placed) and

@@ -6,6 +6,7 @@
     python stair_report.py --width 90 --rise 18 --tread 26 --steps 8   # 数値直接
     python stair_report.py --measure-stair stair.obj --catalog          # 家具一覧表も
     python stair_report.py ... --quick                                  # 掃引のみ(RRTなし・速い)
+    python stair_report.py ... --furniture 150 45 60 --weight 50        # 重さ: 業者/自分たちで比べる
 """
 
 import argparse
@@ -27,6 +28,39 @@ def _bottleneck(outer, obstacles, with_human, num_carriers):
     return where, c_min
 
 
+def _weight_report(outer, obstacles, weight, num_carriers=2):
+    """重さの判定: 業者が運ぶ場合と自分たちで運ぶ場合を比べ、何kgまで運べるかを出す。
+
+    まず「通すのに何度まで傾ける必要があるか」を掃引の二分探索で求める。
+    この角度は重さに依存しないので、そこで下側の人にかかる重さとプリセットの
+    上限を比べれば、プリセットごとに掃引を回し直さずに判定できる。
+    """
+    print(f"\n[重さ] {weight:.0f}kg を{num_carriers}人で運ぶ")
+    t0 = time.time()
+    needed = L.find_needed_tilt(
+        lambda: _bottleneck(outer, obstacles, True, num_carriers)[1] >= 0, tol=2.0)
+    if needed is None:
+        print("  垂直まで傾けても通らない(重さに関係なく、幅・天井が足りない)")
+        print(f"  [{time.time()-t0:.0f}s]")
+        return
+    orig = L.FURN_WEIGHT_KG
+    try:
+        L.FURN_WEIGHT_KG = weight
+        load = max(L.carrier_loads_kg(L._pose(0.0, needed).as_quat(), num_carriers))
+    finally:
+        L.FURN_WEIGHT_KG = orig
+    if needed > 0:
+        print(f"  {needed:.0f}度傾ければ通り、そのとき下側の人に{load:.0f}kgかかる")
+    else:
+        print(f"  水平のまま通り、1人あたり{load:.0f}kg")
+    for preset, label in (("mover", "業者が運ぶ"), ("diy", "自分たちで運ぶ")):
+        limit = L.CARRIER_PRESETS[preset]
+        w_max = L.weight_limit_kg(needed, num_carriers, preset)
+        verdict = "通る" if load <= limit else "重すぎて通らない"
+        print(f"  {label}(1人{limit:.0f}kgまで): {verdict} / {w_max:.0f}kgまで運べる")
+    print(f"  [{time.time()-t0:.0f}s]")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -38,7 +72,15 @@ if __name__ == "__main__":
     ap.add_argument("--catalog", action="store_true", help="定番家具の一覧表も出す(遅い)")
     ap.add_argument("--quick", action="store_true", help="掃引のみ(RRTを回さず速い)")
     ap.add_argument("--max-iter", type=int, default=4000)
+    ap.add_argument("--furniture", type=float, nargs=3, metavar=("L", "W", "H"),
+                    help="判定する家具の寸法(cm)。省略時は基準家具")
+    ap.add_argument("--weight", type=float, help="家具の重さ(kg)。業者/自分たちで運ぶ場合を比べる")
+    ap.add_argument("--com-z", type=float, default=0.0,
+                    help="重心の高さの中心からのずれ(cm)。下が重い家具は負")
     args = ap.parse_args()
+    if args.furniture:
+        L.FURN_L, L.FURN_W, L.FURN_H = args.furniture
+    L.COM_OFFSET = (0.0, 0.0, args.com_z)
 
     width, rise, tread = args.width, args.rise, args.tread
     n = args.steps
@@ -57,7 +99,7 @@ if __name__ == "__main__":
           f"踊り場{L.STAIR_WIDTH:.0f}角 / 全高{L.TOP_Z:.0f}cm ===")
 
     # --- ボトルネック(掃引・速い): 標準家具でどこが一番狭いか ---
-    print(f"\n[ボトルネック] 基準家具 {L.FURN_L:.0f}x{L.FURN_W:.0f}x{L.FURN_H:.0f}cm")
+    print(f"\n[ボトルネック] 家具 {L.FURN_L:.0f}x{L.FURN_W:.0f}x{L.FURN_H:.0f}cm")
     t0 = time.time()
     where_b, c_b = _bottleneck(outer, obstacles, with_human=False, num_carriers=None)
     where_h, c_h = _bottleneck(outer, obstacles, with_human=True, num_carriers=2)
@@ -67,6 +109,9 @@ if __name__ == "__main__":
     else:
         print(f"  2人運搬: {where_h}で あと{-c_h:.0f}cm 足りない")
     print(f"  [{time.time()-t0:.0f}s]")
+
+    if args.weight is not None:
+        _weight_report(outer, obstacles, args.weight)
 
     if args.quick:
         raise SystemExit(0)
