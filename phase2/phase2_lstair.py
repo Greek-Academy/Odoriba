@@ -308,6 +308,24 @@ BODY_MODEL = "humanoid"
 # 両手の間隔の半分(家具の端面上、運搬者の横位置を中心に左右へ)
 HAND_HALF_SPREAD = 18.0
 
+# 運搬者が家具の端から長軸方向にどれだけ離れて立つか(cm)の候補。
+# オラクルの ∃h(持ち方が存在するか)の一部として、横位置(SIDE_OFFSETS)と
+# 一緒に姿勢ごとに選ぶ。以前は p.CARRY_ARM(30cm)に固定していたため、
+# 家具を傾けると端の角が運搬者の頭上・胸元にかぶさり、離れて持てば
+# 避けられる干渉で「通らない」になっていた(decisions.md 2026-10-13)。
+#   15: 胴(厚みの半分12cm)が端面にほぼ触れる、抱えるような持ち方
+#   30: 以前の固定値
+# 45cm以上は入れない。人型は肩の高さ145cmの直立で固定なので、肩から手までが
+# 腕の長さ(58cm)に収まるかを判定できず、腕を伸ばしきった届かない持ち方まで
+# 「持てる」になる(膝・腰を曲げる姿勢を入れるまでは保留)。
+# (30,) にすると以前の固定の判定に戻る(感度分析用)。
+CARRY_ARMS = (15.0, 30.0)
+
+
+def grip_choices():
+    """オラクルが総当たりする持ち方 (横位置, 端から立つ距離) の候補。"""
+    return [(off, arm) for arm in CARRY_ARMS for off in p.SIDE_OFFSETS]
+
 
 def _carrier_frame(pos, R, sign, side_offset, center):
     """運搬者1人の足元の床の高さ・正面の向き(水平xy)・両手の目標点。
@@ -361,10 +379,10 @@ def carrier_body_clearance(pos, quat, side_offset, placed, clearance_fn):
 def carrier_furniture_clearance(pos, quat, side_offset, placed):
     """運搬者全員の体と家具自身の余裕(cm)の最小値。負なら体が家具に食い込む。
 
-    把持点は家具の端からCARRY_ARMだけ長軸方向に離した位置で固定なので、
     家具を傾けると端の角が運搬者の頭上・胸元にかぶさり、体が家具の中に
     入った「ありえない姿勢」が成立してしまっていた(壁との余裕しか見て
-    いなかったため)。腕は家具を持つために触れているので数えない。
+    いなかったため)。どれだけ離れて立つかは持ち方(CARRY_ARMS)として
+    オラクルが選ぶ。腕は家具を持つために触れているので数えない。
     家具は直方体(FURN_L x W x H)として測る。
     """
     pos = np.asarray(pos)
@@ -456,13 +474,14 @@ def make_sampler(with_human, p_guided=0.8, pos_noise=10.0, rot_noise_deg=8.0):
 
 # ---- 可搬性オラクル(このモジュールでの精密化) ----
 
-def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None):
+def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None,
+                        carry_arm=None):
     """把持点と運搬者カプセル中心を返す。立てなければNone。
 
     phase2_demo.place_humans_3dとの違い:
       - 胴体は把持点の近くに「浮かせる」のではなく、把持点の(x, y)の
         歩行面の上に立たせる(カプセルは床から身長分)
-      - 把持点が足元からREACH_MIN..REACH_MAXの高さになければ持てない
+      - 手(家具の端面上)が足元からREACH_MIN..REACH_MAXの高さになければ持てない
         (そのときはNoneではなく、余裕をcmで返すために呼び出し側で扱う)
 
     戻り値: [(capsule_center, reach_margin_cm), ...] または
@@ -470,8 +489,10 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None
     reach_margin_cmは手の届く範囲までの余裕(負なら届かない)。
     floor_fnは歩行面の高さ関数(既定はこのモジュールのL字のfloor_z)。
     折り返し階段など別の環境でオラクルを使い回すときに差し替える。
+    carry_armは家具の端から長軸方向に立つ距離(既定は p.CARRY_ARM)。
     """
     num_carriers = p.NUM_CARRIERS if num_carriers is None else num_carriers
+    carry_arm = p.CARRY_ARM if carry_arm is None else carry_arm
     floor_fn = floor_z if floor_fn is None else floor_fn
     R = g3.rotmat_from_quat(quat)
     pos = np.asarray(pos)
@@ -480,12 +501,16 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None
     out = []
     signs = (-1.0,) if num_carriers == 1 else (1.0, -1.0)
     for sign in signs:
-        grip = pos + R @ np.array([sign * (hl + p.CARRY_ARM), side_offset, 0.0])
+        grip = pos + R @ np.array([sign * (hl + carry_arm), side_offset, 0.0])
         # 把持点の高さをヒントに渡す(床が上下に重なる所で正しい段を選ぶため)
         fz = floor_fn(grip[0], grip[1], grip[2])
         if fz is None:
             return None
-        hand = grip[2] - fz
+        # 手の高さは端面上の実際の手の位置で測る(立つ位置gripで測ると、
+        # 傾けたとき carry_arm·sin(傾き) だけずれ、そのずれが持つ距離の
+        # 選び方で変わってしまう)
+        hand_pt = pos + R @ np.array([sign * hl, side_offset, 0.0])
+        hand = hand_pt[2] - fz
         reach_margin = min(hand - REACH_MIN, REACH_MAX - hand)
         center = np.array([grip[0], grip[1], fz + LEG_CLEAR + _CARRIER_HALF_H])
         out.append((center, reach_margin))
@@ -494,7 +519,7 @@ def place_humans_lstair(pos, quat, side_offset, num_carriers=None, floor_fn=None
 
 def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
                                floor_fn=None):
-    """運搬者込みで達成できる最良のクリアランス(cm)と、その横位置。
+    """運搬者込みで達成できる最良のクリアランス(cm)と、その持ち方(横位置, 立つ距離)。
 
     phase2_demo.carriable_clearanceと同じ総当たりだが、
       - 傾き上限を超えていれば即negative(超過角に比例したペナルティを
@@ -512,9 +537,9 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
         return -np.inf, None
     bc = furniture_clearance(pos, quat, outer, obstacles)
     best = -np.inf
-    best_offset = None
-    for off in p.SIDE_OFFSETS:
-        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+    best_grip = None
+    for off, arm in grip_choices():
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn, arm)
         if placed is None:
             continue
         terms = [bc]
@@ -529,8 +554,8 @@ def carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers=None,
         cand = min(terms)
         if cand > best:
             best = cand
-            best_offset = off
-    return best, best_offset
+            best_grip = (off, arm)
+    return best, best_grip
 
 
 def with_tilt_violation(quat, num_carriers=None):
@@ -651,7 +676,7 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
     carriable_clearance_lstairは最小値しか返さず、家具が壁に当たった時点で
     運搬者の項を評価しないため「なぜ通らないか」が分からない。ここでは
     全項を評価して並べ、一番厳しい項の名前を limiting に入れる。
-    運搬者の項は、体と手の届く範囲の両方を含めて最良になる横位置で測る。
+    運搬者の項は、体と手の届く範囲の両方を含めて最良になる持ち方で測る。
     """
     bd = {"furniture": float(furniture_clearance(pos, quat, outer, obstacles)),
           "carrier_body": None, "carrier_self": None, "reach": None,
@@ -663,8 +688,8 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
                   loads_kg=carrier_loads_kg(quat, num_carriers),
                   max_tilt_deg=0.0 if cap is None else float(cap))
     best = -np.inf
-    for off in p.SIDE_OFFSETS:
-        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+    for off, arm in grip_choices():
+        placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn, arm)
         if placed is None:
             continue
         body = carrier_body_clearance(pos, quat, off, placed,
@@ -680,6 +705,7 @@ def clearance_breakdown(pos, quat, outer, obstacles, num_carriers=None, floor_fn
             best = score
             bd["carrier_body"], bd["carrier_self"] = float(body), float(selfc)
             bd["reach"] = float(reach)
+            bd["grip"] = {"side_offset": float(off), "carry_arm": float(arm)}
     if FURN_WEIGHT_KG is not None and with_tilt_violation(quat, num_carriers):
         bd["limiting"] = "load"
     elif FURN_WEIGHT_KG is None and bd["tilt_deg"] > MAX_TILT_DEG + 1e-6:
@@ -726,26 +752,25 @@ def state_valid(pos, quat, with_human, outer, obstacles, num_carriers=None,
 
 def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
                          floor_fn=None):
-    """描画専用: 最良の横位置で、運搬者を人の形で描くための姿勢のリスト。
+    """描画専用: 最良の持ち方で、運搬者を人の形で描くための姿勢のリスト。
 
     1人ごとに dict(center=判定に使う円柱の中心, foot_xy=足元のxy,
     floor_z=足元の床の高さ, facing=正面の向き(水平xy), hands=両手の目標点2つ)
     を返す。手の目標点は家具の端面上(把持点の高さ)に置く。
 
-    詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
-    描きたいので、成立しない場合はside_offset=0の位置で代用する。
+    詰まった状態(どの持ち方でも不成立)でも「そこに立とうとしている人」を
+    描きたいので、成立しない場合はside_offset=0・既定の距離で代用する。
     """
-    _, off = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
-                                        floor_fn)
-    if off is None:
-        off = 0.0
+    _, grip = carriable_clearance_lstair(pos, quat, outer, obstacles, num_carriers,
+                                         floor_fn)
+    off, arm = (0.0, p.CARRY_ARM) if grip is None else grip
     pos = np.asarray(pos)
     R = g3.rotmat_from_quat(quat)
     signs = _carrier_signs(1 if (num_carriers or p.NUM_CARRIERS) == 1 else 2)
-    placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn)
+    placed = place_humans_lstair(pos, quat, off, num_carriers, floor_fn, arm)
     if placed is None:
         # 床がない場所: 把持点の高さに浮かせて描く(見た目のためだけ)
-        centers = [pos + R @ np.array([sg * (FURN_L / 2 + p.CARRY_ARM), 0.0, 0.0])
+        centers = [pos + R @ np.array([sg * (FURN_L / 2 + arm), 0.0, 0.0])
                    for sg in signs]
     else:
         centers = [c for c, _ in placed]
@@ -760,9 +785,9 @@ def carrier_poses_lstair(pos, quat, num_carriers=None, outer=None, obstacles=Non
 
 def best_human_positions_lstair(pos, quat, num_carriers=None, outer=None, obstacles=None,
                                 floor_fn=None):
-    """描画専用: 最良の横位置での運搬者カプセル中心のリスト。
+    """描画専用: 最良の持ち方での運搬者カプセル中心のリスト。
 
-    詰まった状態(どの横位置でも不成立)でも「そこに立とうとしている人」を
+    詰まった状態(どの持ち方でも不成立)でも「そこに立とうとしている人」を
     描きたいので、成立しない場合はside_offset=0の位置で代用する。
     """
     return [cp["center"] for cp in carrier_poses_lstair(pos, quat, num_carriers, outer,
@@ -1107,7 +1132,7 @@ def result_meta(num_carriers, max_iter, seed):
                   "landing": [STAIR_WIDTH, STAIR_WIDTH], "landing_z": LAND_Z,
                   "base_d": BASE_D, "top_d": TOP_D, "ceil_clear": CEIL_CLEAR},
         "furniture": {"L": FURN_L, "W": FURN_W, "H": FURN_H},
-        "carrier": {"r": p.HUMAN_R, "height": p.HUMAN_HEIGHT, "arm": p.CARRY_ARM,
+        "carrier": {"r": p.HUMAN_R, "height": p.HUMAN_HEIGHT, "arm": p.CARRY_ARM, "carry_arms": list(CARRY_ARMS),
                     "leg_clear": LEG_CLEAR,
                     "reach": [REACH_MIN, REACH_MAX], "max_tilt_deg": MAX_TILT_DEG,
                     "num_carriers": num_carriers, **body_meta()},
