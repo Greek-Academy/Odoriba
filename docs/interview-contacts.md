@@ -1,6 +1,6 @@
 # ヒアリング依頼先リスト
 
-目的と質問は `interview-questions.md`。依頼メールのひな形は `interview-email.md`。
+目的と質問は `interview-questions.md`。依頼メールのひな形は `interview-email.md`。折り返し電話の台本は `interview-phone-script.md`。
 
 **今いちばん確かめたいこと（2026-10-06）**: 階段の角で家具を何度まで立てて回すか。
 感度分析で、2人で運ぶときの不足量（29cm）の決め手が、実測していない「傾きの上限55度」だと分かったため（`decisions.md`）。
