@@ -91,6 +91,11 @@
 - スキャン空間の判定の続き: 掃引の刻みを細かくする（「あと何cm」が2〜4cm揺れる）、
   階段の段まで写ったスキャンでの確認、大きなスキャンでの空間作成の高速化（今は約1分）
 
+## 参考文献の置き場
+- 出典ごとの要約・引用・信頼度・発表前の確認事項は、リポジトリ外の Obsidian に置いている:
+  `C:\Users\mono\OneDrive\ドキュメント\Obsidian Vault\Alpha+ Project\調査\参考文献 目次.md`（2026-10-27 作成、出典17件）。
+  docs/decisions.md には要約と URL だけを書き、引用と評価は Obsidian 側に書く
+
 ## 運用ルール（CLAUDE.md準拠）
 - Git Flow: developから `feature/<kebab>` を切り、`merge --no-ff` でdevelopへ、push。
   マージ後もブランチは消さない。コミットはConventional Commits・日本語コメント・細かい粒度。
