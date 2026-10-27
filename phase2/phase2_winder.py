@@ -395,7 +395,7 @@ def result_meta(num_carriers, max_iter, seed):
                   "n_steps1": N_STEPS1, "n_winders": N_WINDERS, "n_steps2": N_STEPS2,
                   "base_d": BASE_D, "top_d": TOP_D, "ceil_clear": CEIL_CLEAR},
         "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
-        "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM,
+        "carrier": {"r": L.p.HUMAN_R, "height": L.p.HUMAN_HEIGHT, "arm": L.p.CARRY_ARM, "carry_arms": list(L.CARRY_ARMS),
                     "leg_clear": L.LEG_CLEAR,
                     "reach": [L.REACH_MIN, L.REACH_MAX], "max_tilt_deg": L.MAX_TILT_DEG,
                     "num_carriers": num_carriers, **L.body_meta()},

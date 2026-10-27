@@ -150,15 +150,14 @@ def worst_contact(space, pose, with_human, num_carriers=None):
     i = int(np.argmin(fc))
     best = (fp[i], float(fc[i]), "furniture")
     if with_human and L.BODY_MODEL == "humanoid":
-        _, off = L.carriable_clearance_lstair(pos, quat, space, None, num_carriers,
-                                              floor_fn=space.floor_fn)
-        placed = L.place_humans_lstair(pos, quat, 0.0 if off is None else off,
-                                       num_carriers, space.floor_fn)
+        _, grip = L.carriable_clearance_lstair(pos, quat, space, None, num_carriers,
+                                               floor_fn=space.floor_fn)
+        off, arm = (0.0, L.p.CARRY_ARM) if grip is None else grip
+        placed = L.place_humans_lstair(pos, quat, off, num_carriers, space.floor_fn, arm)
         if placed is not None:
             R = g3.rotmat_from_quat(quat)
             for sign, (center, _) in zip(L._carrier_signs(len(placed)), placed):
-                floor, facing, hands = L._carrier_frame(pos, R, sign,
-                                                        0.0 if off is None else off, center)
+                floor, facing, hands = L._carrier_frame(pos, R, sign, off, center)
                 for pts, r in hf.body_parts(center[:2], floor, facing, hands, L.LEG_CLEAR):
                     c = space.clearance_points(pts) - r
                     j = int(np.argmin(c))
@@ -207,7 +206,8 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
     result = {"meta": {"centerline_length": cl.s_total,
                        "corners": [list(c) for c in cl.corners],
                        "furniture": {"L": L.FURN_L, "W": L.FURN_W, "H": L.FURN_H},
-                       "carrier": {"num_carriers": num_carriers, **L.body_meta()},
+                       "carrier": {"num_carriers": num_carriers, "carry_arms": list(L.CARRY_ARMS),
+                                   **L.body_meta()},
                        "planner": {"max_iter": max_iter, "seed": seed, "w_rot": L.W_ROT}}}
     for key, with_human in ((("box_only", False), ("with_carriers", True)) if rrt else ()):
         path, tree = p.rrt_connect(
