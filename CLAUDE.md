@@ -138,7 +138,7 @@ pip install numpy scipy trimesh open3d matplotlib
 2. feature ブランチでコミットを積む
 3. `develop` にマージする（下記「PRについて」参照）
 4. リリース時は `develop` を `main` に直接マージし、`vX.Y.Z` のタグを打つ
-5. **マージ後もブランチは削除せず残す。** 後から見返せるように、feature/hotfix ブランチは merge 後も削除しない（リモート・ローカルとも）
+5. **マージ後はブランチを削除する。** feature/hotfix ブランチは merge して push したら、リモート・ローカルとも削除する（`git branch -d <名前>` と `git push origin --delete <名前>`）。`--no-ff` のマージコミットが残るので、後から見返すときは `git log --merges develop` を使う。未マージのブランチは削除しない
 
 ## PRについて
 
