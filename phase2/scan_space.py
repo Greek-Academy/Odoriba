@@ -266,10 +266,7 @@ class ScanSpace:
         h = self.h
         fv = np.zeros(self.shape, dtype=bool)
         fv[tuple(np.asarray(floor_vox).T)] = True
-        xy = (h, h, 1e6)   # z方向の距離を極端に大きくして、水平方向だけで広げる
-        grown = nd.distance_transform_edt(~fv, sampling=xy) <= FLOOR_CLOSE + FLOOR_PAD
-        fv = nd.distance_transform_edt(grown, sampling=xy) > FLOOR_CLOSE
-        del grown
+        fv = self._close_floor_xy(fv)
         n_up = int(np.ceil(FLOOR_SPACE_H / h))
         n_down = 2
         K = self.shape[2]
@@ -281,6 +278,43 @@ class ScanSpace:
         hi_i = np.minimum(k + n_down + 1, K)
         lo_i = np.maximum(k - n_up, 0)
         return (c[:, :, hi_i] - c[:, :, lo_i]) > 0
+
+    def _close_floor_xy(self, fv):
+        """床のボクセル fv を水平方向に FLOOR_CLOSE + FLOOR_PAD 広げてから
+        FLOOR_CLOSE 縮めた結果(3Dの真偽値)を返す。
+
+        以前は z 方向の間隔を 1e6 にした3Dの距離変換を2回かけていた。z 方向に
+        離れたボクセルまでの距離は 1e6 以上になり閾値を必ず超えるので、結果は
+        「z スライスごとの2Dの距離変換」と同じになる(距離の式も同じで、z の
+        項は 0 を足すだけなので浮動小数点でも一致する)。床のある z スライス
+        だけを2Dで処理して時間を短くする。床のない z スライスは広げても
+        何もないので全て False のまま。
+        """
+        h = self.h
+        ks = np.flatnonzero(fv.any(axis=(0, 1)))
+        if len(ks) == 0:
+            # 床が1つもないと3Dの距離変換は特殊な値を返すので、元の計算をそのまま使う
+            xy = (h, h, 1e6)
+            grown = nd.distance_transform_edt(~fv, sampling=xy) <= FLOOR_CLOSE + FLOOR_PAD
+            return nd.distance_transform_edt(grown, sampling=xy) > FLOOR_CLOSE
+        grown = np.zeros(self.shape, dtype=bool)
+        for k in ks:
+            grown[:, :, k] = nd.distance_transform_edt(
+                ~fv[:, :, k], sampling=(h, h)) <= FLOOR_CLOSE + FLOOR_PAD
+        if grown.all():
+            # 全て True だと3Dの距離変換は特殊な値を返すので、元の計算をそのまま使う
+            return nd.distance_transform_edt(grown, sampling=(h, h, 1e6)) > FLOOR_CLOSE
+        out = np.zeros(self.shape, dtype=bool)
+        for k in ks:
+            g = grown[:, :, k]
+            if g.all():
+                # スライス全体が True: 3D版では一番近い False が別の z スライス
+                # (距離 1e6 以上)になるので全て True。2Dの距離変換はスライスの
+                # 外に False があるとみなした値を返すので、ここで合わせる
+                out[:, :, k] = True
+            else:
+                out[:, :, k] = nd.distance_transform_edt(g, sampling=(h, h)) > FLOOR_CLOSE
+        return out
 
     # ---- 距離場の問い合わせ ----
 
