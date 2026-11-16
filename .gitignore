@@ -11,3 +11,5 @@ phase2/*.obj
 phase2/*.glb
 demo/
 .pytest_cache/
+# 業者とのやりとりは公開リポジトリに置かない(CLAUDE.md 参照)
+docs/interview-*
