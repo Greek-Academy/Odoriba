@@ -72,22 +72,44 @@ def guess_units_scale(mesh, assume=None):
     return 1.0, "cm(推定)"
 
 
+def upward_share(mesh):
+    """水平な面のうち、上向きの面が占める面積の割合(0〜1)を返す。
+
+    スキャンの面は撮影者の側を向くので、床・踏み面・机の上は上向き、天井は
+    下向きになる。物は床に置かれ、階段の段も上を向くので、正しい向きなら
+    上向きの方が多い。半分を大きく下回るなら上下が逆の疑いがある。
+    """
+    nz = mesh.face_normals[:, 2]
+    area = mesh.area_faces
+    up = float(area[nz > 0.9].sum())
+    down = float(area[nz < -0.9].sum())
+    return up / (up + down) if up + down > 0 else 0.5
+
+
 def load_scan_zup(path, assume_units=None):
     """スキャンOBJを読み、cmに正規化し、Z-upに軸合わせして原点を揃える。
 
-    Scaniverseは重力方向がY軸。本プロジェクトは高さがZ軸なので、
-    Y->Z, Z->-Y の入れ替え(X軸まわり-90度)で立てる。
-    戻り値: (mesh_cm_zup, info)
+    Scaniverseは重力の逆向き(上)がY軸の正。本プロジェクトは高さがZ軸なので、
+    X軸まわりに+90度回して (x, y, z) -> (x, -z, y) にする。
+    2026-11-17 までは-90度で回しており、上下が逆になっていた(天井が床として
+    扱われ、階段の踏み面が下向きになって見つからなかった)。
+    戻り値: (mesh_cm_zup, info)。info["upward_share"] が0.4未満なら、
+    上下が逆の疑いがあるので警告を出す。
     """
     m = load_mesh(path)
     scale, unit_label = guess_units_scale(m, assume_units)
     m.apply_scale(scale)
     # Y-up -> Z-up
-    R = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    R = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
     m.apply_transform(R)
     # 原点を最小コーナーに揃える(座標を正の領域に置く)
     m.apply_translation(-m.bounds[0])
-    info = {"unit_label": unit_label, "extents_cm": [float(e) for e in m.extents]}
+    share = upward_share(m)
+    if share < 0.4:
+        import warnings
+        warnings.warn(f"上向きの水平面が{share:.0%}しかない。スキャンの上下が逆の疑いがある: {path}")
+    info = {"unit_label": unit_label, "extents_cm": [float(e) for e in m.extents],
+            "upward_share": share}
     return m, info
 
 
