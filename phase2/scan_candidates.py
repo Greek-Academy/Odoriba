@@ -7,8 +7,8 @@
     python scan_candidates.py <scan.obj> --csv 候補.csv --any-side
     python scan_candidates.py --route --item 小 60 40 40 --item 大 200 90 90
 
-寸法は 幅 奥行 高さ(cm)。候補ごとに ○(入る)/△(際どい)/×(入らない)と、
-一番厳しい所の余裕を表にする。「何cmまで入る」と1つの数字にしないのは、
+寸法は 幅 奥行 高さ(cm)。候補ごとに ○(入る見込み)/△(際どい)/×(入らない)と、
+判定を決めた所の余裕を表にする。○は掃引だけで出した見込みで、断定ではない。「何cmまで入る」と1つの数字にしないのは、
 幅・奥行・高さが取り合いになり、1つの上限では言えないため。
 
 判定は scan_plan.judge の掃引(1件あたり十数秒〜1分)を寸法を変えて
@@ -34,12 +34,22 @@ SCAN_ERR_STRAIGHT = 3.0
 SCAN_ERR_CORNER = 9.0
 
 MARKS = {"ok": "○", "close": "△", "ng": "×", "unknown": "?"}
+LEGEND = "○ 入る見込み / △ 際どい(スキャンの誤差の内側) / × 入らない / ? 判定できない"
+_ORDER = {"ng": 0, "close": 1, "ok": 2}
 
 NOTES = (
     "掃引だけの判定で、回している途中の引っかかりは見ていない(○は甘めに出る)",
     "立てて回す運び方はまだ入っていないので、長い家具は厳しめに出る",
     "手すりがスキャンに写っていないと、実際より甘く出る",
+    "経路の両端(家具の長さの半分+約60cm)は調べていない。目的地は最後の狭い所"
+    "より先に置く",
+    "家具の表面は粗い点で見ているので、大きい家具では手すりのような細い"
+    "出っ張りを見逃すことがある",
 )
+
+# 余裕を決めた項を、利用者に見せる言葉にしたもの
+TERM_TEXT = {"furniture": "家具と壁の間", "body": "運ぶ人と壁の間",
+             "self": "運ぶ人と家具の間"}
 
 
 def scan_error(at_corner):
@@ -102,33 +112,78 @@ def orientations(w, d, h, any_side=False):
     return out
 
 
+def _decide(space, bh):
+    """運搬者ありの掃引の結果から、判定とそれを決めた位置を選ぶ。
+
+    余裕が一番小さい位置だけで決めると甘くなる。直線部分と曲がる所で誤差の
+    幅が違うので、たとえば直線で-4cm・曲がる所で-5cmなら、最小は曲がる所
+    (±9cmの内側で「際どい」)だが、直線の-4cmは±3cmの外で「入らない」。
+    掃引した全ての位置にその場所の誤差の幅を当て、一番悪い判定を採る。
+
+    手が届く範囲(reach)の項は壁との距離ではない。それが余裕を決めていて
+    値が正のときは、残りの項(壁や家具との距離)の最小値で判定する。
+    戻り値: (判定, 位置s, 余裕cm, 曲がる所か, 効いた項の名前 or None)
+    """
+    cl = space.centerline
+    limit = bh.get("limit") or {}
+    term, terms = limit.get("term"), dict(limit.get("terms", {}))
+    s_min, c_min = bh["s"], bh["capacity_cm"]
+    at_min = cl.corner_at(s_min) is not None
+    if bh["no_pose_s"] or (term == "reach" and c_min < 0):
+        return "ng", s_min, c_min, at_min, term
+    if term == "reach":
+        terms.pop("reach")
+        if terms:
+            term = min(terms, key=terms.get)
+            c_min = terms[term]
+        else:
+            term = None
+    worst = None
+    for s, c in bh["profile"]:
+        if not np.isfinite(c):
+            continue
+        same = abs(s - s_min) < 1e-6
+        c = c_min if same else c
+        at = cl.corner_at(s) is not None
+        verdict = classify(c, at)
+        key = (_ORDER[verdict], c)
+        if worst is None or key < worst[0]:
+            worst = (key, verdict, s, c, at, term if same else None)
+    if worst is None:
+        return classify(c_min, at_min), s_min, c_min, at_min, term
+    return worst[1:]
+
+
 def _summarize(space, result):
     """judge の結果から、表に出す値だけを取り出す。"""
     bh, bf = result["bottleneck"], result["bottleneck_furniture_only"]
-    at_corner = space.centerline.corner_at(bh["s"]) is not None
-    no_pose = bool(bh["no_pose_s"])
+    verdict, s, c, at_corner, term = _decide(space, bh)
     limit = bh.get("limit") or {}
-    term = limit.get("term")
+    swept = [r[0] for r in bh["profile"]]
     return {
-        "verdict": classify(bh["capacity_cm"], at_corner, no_pose, term),
-        "capacity_cm": bh["capacity_cm"],
+        "verdict": verdict,
+        "capacity_cm": c,
         "furniture_only_cm": bf["capacity_cm"],
-        "s": bh["s"],
-        "xy": bh["xy"],
+        "s": s,
+        "xy": np.asarray(space.centerline.xy_at(s), dtype=float).tolist(),
         "at_corner": at_corner,
         "scan_error_cm": scan_error(at_corner),
+        "term": term,
+        # 以下は余裕が一番小さい位置の値(判定を決めた位置と違うことがある)
+        "min_capacity_cm": bh["capacity_cm"],
+        "min_s": bh["s"],
+        "min_term": limit.get("term"),
+        "min_terms": limit.get("terms", {}),
         "contact_part": bh["contact"]["part"],
         "contact_xyz": bh["contact"]["xyz"],
-        "term": term,
-        "terms": limit.get("terms", {}),
         "no_pose_s": bh["no_pose_s"],
+        "swept_s": [min(swept), max(swept)] if swept else None,
     }
 
 
 def _rank(row):
     """向きを比べるときの良さ(大きいほど良い)。"""
-    order = {"ok": 2, "close": 1, "ng": 0}
-    return (order[row["verdict"]], not row["no_pose_s"], row["capacity_cm"])
+    return (_ORDER[row["verdict"]], not row["no_pose_s"], row["capacity_cm"])
 
 
 def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=print):
@@ -173,17 +228,13 @@ def shortage_text(row):
     if row["no_pose_s"]:
         return "持てる姿勢が無い所がある"
     c = row["capacity_cm"]
-    if row["term"] == "reach" and c < 0:
+    if row["term"] == "reach":
         return "手が届かない"
     where = "曲がる所" if row["at_corner"] else "直線部分"
-    # 何が効いているかは、余裕を決めた項から言う(一番めり込んだ点の部位とは
-    # 食い違うことがある)。項が無い(家具だけの判定)ときは部位から言う
-    what = {"furniture": "家具が壁に当たる", "body": "運ぶ人が壁に当たる",
-            "self": "運ぶ人と家具が重なる"}.get(row["term"])
-    if what is None:
-        what = "運ぶ人が壁に当たる" if row["contact_part"] == "carrier" else "家具が壁に当たる"
+    what = TERM_TEXT.get(row["term"])
     amount = f"余裕{c:.0f}cm" if c >= 0 else f"あと{-c:.0f}cm足りない"
-    return f"{amount}({where}、{what}、誤差±{row['scan_error_cm']:.0f}cm)"
+    detail = "、".join(x for x in (where, what, f"誤差±{row['scan_error_cm']:.0f}cm") if x)
+    return f"{amount}({detail})"
 
 
 def format_row(row):
@@ -196,17 +247,22 @@ def format_row(row):
 
 
 def read_csv(path):
-    """名前,幅,奥行,高さ のCSVを読む(数値でない行は見出しとして飛ばす)。"""
-    items = []
+    """名前,幅,奥行,高さ のCSVを読む。(候補, 読めなかった行) を返す。
+
+    1行目が数値でなければ見出しとして飛ばす。それ以外で読めない行は、
+    黙って落とすと候補が減ったことに気づけないので、呼び出し側に返す。
+    """
+    items, skipped = [], []
     with open(path, newline="", encoding="utf-8-sig") as f:
-        for rec in csv.reader(f):
-            if len(rec) < 4:
+        for i, rec in enumerate(csv.reader(f)):
+            if not any(x.strip() for x in rec):
                 continue
             try:
                 items.append((rec[0], float(rec[1]), float(rec[2]), float(rec[3])))
-            except ValueError:
-                continue
-    return items
+            except (ValueError, IndexError):
+                if i > 0:
+                    skipped.append(",".join(rec))
+    return items, skipped
 
 
 def build_space(args, parser):
@@ -224,6 +280,8 @@ def build_space(args, parser):
         import scan_ingest as SI
         mesh, _ = SI.load_scan_zup(args.mesh)
         start, goal = args.start, args.goal
+        if (start is None) != (goal is None):
+            parser.error("--start と --goal は両方指定するか、両方省く")
         if args.seed:
             seed = tuple(args.seed)
         elif start:
@@ -264,13 +322,20 @@ def main():
     except ValueError:
         parser.error("--item は 名前 幅 奥行 高さ(寸法は数値)")
     if args.csv:
-        items += read_csv(args.csv)
+        from_csv, skipped = read_csv(args.csv)
+        items += from_csv
+        for line in skipped:
+            print(f"警告: CSVのこの行は読めなかったので飛ばします: {line}")
     if not items:
         parser.error("候補が無い(--item か --csv で指定する)")
+    for name, *size in items:
+        if min(size) <= 0:
+            parser.error(f"{name}: 寸法は正の数(cm)で指定する")
 
     space = build_space(args, parser)
     print(f"経路の長さ {space.centerline.s_total:.0f}cm、運ぶ人 {args.carriers}人、"
           f"候補 {len(items)}件")
+    print(LEGEND)
     rows = judge_candidates(space, items, num_carriers=args.carriers,
                             any_side=args.any_side)
     print("\n注意:")

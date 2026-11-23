@@ -20,17 +20,26 @@ class _Centerline:
     def corner_at(self, s):
         return (100.0, 200.0) if 100.0 <= s <= 200.0 else None
 
+    def xy_at(self, s):
+        return [float(s), 0.0]
+
 
 class _Space:
     centerline = _Centerline()
 
 
-def _result(capacity, s=50.0, no_pose=(), term="furniture", part="furniture"):
-    """judge が返す dict のうち、一括判定が読む部分だけ。"""
+def _result(capacity, s=50.0, no_pose=(), term="furniture", part="furniture",
+            terms=None, others=()):
+    """judge が返す dict のうち、一括判定が読む部分だけ。
+
+    others は、余裕が最小の位置のほかに掃引した位置 [(s, 余裕), ...]。
+    """
     b = {"s": s, "capacity_cm": capacity, "xy": [0.0, 0.0], "no_pose_s": list(no_pose),
-         "contact": {"xyz": [0.0, 0.0, 0.0], "clearance_cm": capacity, "part": part}}
+         "contact": {"xyz": [0.0, 0.0, 0.0], "clearance_cm": capacity, "part": part},
+         "profile": [[s, capacity]] + [list(o) for o in others]}
     return {"bottleneck_furniture_only": dict(b, capacity_cm=capacity + 5.0),
-            "bottleneck": dict(b, limit={"term": term, "terms": {term: capacity}})}
+            "bottleneck": dict(b, limit={"term": term,
+                                         "terms": terms or {term: capacity}})}
 
 
 # ---- classify ----
@@ -152,7 +161,7 @@ def test_shortage_text_says_how_much_is_missing(monkeypatch):
                         lambda space, **kw: _result(-4.0, s=150.0, term="body"))
     row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
     text = sc.shortage_text(row)
-    assert "あと4cm足りない" in text and "曲がる所" in text and "運ぶ人が壁に当たる" in text
+    assert "あと4cm足りない" in text and "曲がる所" in text and "運ぶ人と壁の間" in text
 
 
 def test_shortage_text_names_the_limiting_term_not_the_deepest_point(monkeypatch):
@@ -160,4 +169,46 @@ def test_shortage_text_names_the_limiting_term_not_the_deepest_point(monkeypatch
     monkeypatch.setattr(sp, "judge",
                         lambda space, **kw: _result(-7.0, term="self", part="furniture"))
     row = sc.judge_candidates(_Space(), [("棚", 90.0, 40.0, 180.0)], log=lambda *_: None)[0]
-    assert "運ぶ人と家具が重なる" in sc.shortage_text(row)
+    assert "運ぶ人と家具の間" in sc.shortage_text(row)
+
+
+# ---- 判定を決める位置 ----
+
+def test_verdict_is_ng_when_a_straight_part_is_short_beyond_its_error(monkeypatch):
+    # 最小は曲がる所の-5cm(±9cmの内側)だが、直線の-4cmは±3cmの外で入らない
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result(
+        -5.0, s=150.0, others=[(300.0, -4.0)]))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["verdict"] == "ng"
+    assert (row["s"], row["capacity_cm"], row["at_corner"]) == (300.0, -4.0, False)
+    assert row["min_capacity_cm"] == -5.0
+    assert "直線部分" in sc.shortage_text(row)
+
+
+def test_verdict_is_close_when_a_corner_is_inside_its_error(monkeypatch):
+    # 最小は直線の+4cm(○)だが、曲がる所の+6cmは±9cmの内側で際どい
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result(
+        4.0, s=300.0, others=[(150.0, 6.0)]))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["verdict"] == "close"
+    assert (row["s"], row["at_corner"]) == (150.0, True)
+
+
+def test_positive_reach_is_not_shown_as_room_to_the_wall(monkeypatch):
+    # 手が届く範囲の余り(+2cm)は壁との距離ではない。壁との距離(+25cm)で判定する
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result(
+        2.0, term="reach", terms={"reach": 2.0, "furniture": 25.0, "body": 30.0}))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["verdict"] == "ok" and row["term"] == "furniture"
+    assert "余裕25cm" in sc.shortage_text(row)
+
+
+# ---- CSV ----
+
+def test_read_csv_reports_rows_it_could_not_read(tmp_path):
+    path = tmp_path / "c.csv"
+    lines = ["名前,幅,奥行,高さ", "ソファ,180,85,80", "棚,90cm,40,180"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    items, skipped = sc.read_csv(path)
+    assert items == [("ソファ", 180.0, 85.0, 80.0)]
+    assert skipped == ["棚,90cm,40,180"]
