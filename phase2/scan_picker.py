@@ -74,21 +74,12 @@ class App:
                 "furniture": [L.FURN_L, L.FURN_W, L.FURN_H],
                 "carriers": self.num_carriers}
 
-    def _seed_near(self, start):
-        """出発点の上で、スキャンの面から一番離れた点(塗りつぶしの起点)。"""
-        base = np.asarray(start, dtype=float)
-        offs = [(dx, dy, dz) for dx in (-30, 0, 30) for dy in (-30, 0, 30)
-                for dz in (80, 100, 130)]
-        cand = base + np.array(offs, dtype=float)
-        _, dist, _ = trimesh.proximity.closest_point(self.mesh, cand)
-        return tuple(float(v) for v in cand[int(np.argmax(dist))])
-
     def _ensure_space(self, job, start):
         sp = self.space
         if sp is not None and float(sp.clearance_points([np.asarray(start) + [0, 0, 100]])[0]) > 0:
             return sp
         self.jobs[job]["message"] = "空間を作っています(約1分)..."
-        seed = self.fixed_seed or self._seed_near(start)
+        seed = self.fixed_seed or SS.seed_near(self.mesh, start)
         self.space = SS.ScanSpace(self.mesh, seed)
         return self.space
 

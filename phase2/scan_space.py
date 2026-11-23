@@ -113,6 +113,20 @@ def auto_seed(mesh, height=100.0, n=300, seed=0):
     return tuple(float(v) for v in cand[int(np.argmax(dist))])
 
 
+def seed_near(mesh, start_xyz):
+    """出発点の上で、スキャンの面から一番離れた点(塗りつぶしの起点)。
+
+    起点を auto_seed で選ぶと、つながっていない小さな部屋に入って、そこに
+    しか置けなくなることがある。出発点が分かっているならその上から選ぶ。
+    """
+    base = np.asarray(start_xyz, dtype=float)
+    offs = [(dx, dy, dz) for dx in (-30, 0, 30) for dy in (-30, 0, 30)
+            for dz in (80, 100, 130)]
+    cand = base + np.array(offs, dtype=float)
+    _, dist, _ = trimesh.proximity.closest_point(mesh, cand)
+    return tuple(float(v) for v in cand[int(np.argmax(dist))])
+
+
 class ScanSpace:
     """スキャンメッシュから作った距離場・床・中心線。
 
