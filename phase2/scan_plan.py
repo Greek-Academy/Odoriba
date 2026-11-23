@@ -166,6 +166,33 @@ def worst_contact(space, pose, with_human, num_carriers=None):
     return np.asarray(best[0]), best[1], best[2]
 
 
+def limiting_term(space, pose, num_carriers=None):
+    """運搬者ありの余裕を決めている項の名前と、項ごとの値(cm)。
+
+    余裕は「家具と壁」「手の届く範囲」「運搬者の体と壁」「運搬者と家具」の
+    最小値で、どれも cm だが意味が違う。"reach" が効いているときの値は
+    「手の高さが届く範囲からどれだけ外れているか」で、壁へのめり込みではない
+    (家全体のスキャンで -83cm と出たのはこれだった。decisions.md 2026-11-23)。
+    戻り値: (項の名前, {項の名前: 値})。持てる持ち方が無ければ (None, {})。
+    """
+    pos, quat = np.asarray(pose[0]), np.asarray(pose[1])
+    _, grip = L.carriable_clearance_lstair(pos, quat, space, None, num_carriers,
+                                           floor_fn=space.floor_fn)
+    if grip is None:
+        return None, {}
+    off, arm = grip
+    placed = L.place_humans_lstair(pos, quat, off, num_carriers, space.floor_fn, arm)
+    terms = {"furniture": float(L.furniture_clearance(pos, quat, space, None))}
+    if L.ORACLE_TERMS["reach"]:
+        terms["reach"] = float(min(r for _, r in placed))
+    if L.ORACLE_TERMS["body"]:
+        terms["body"] = float(L.carrier_body_clearance(
+            pos, quat, off, placed, lambda pts: L.env_clearance_points(pts, space, None)))
+    if L.ORACLE_TERMS["self"]:
+        terms["self"] = float(L.carrier_furniture_clearance(pos, quat, off, placed))
+    return min(terms, key=terms.get), terms
+
+
 def best_effort_path(space, tree):
     """RRTが失敗したとき、start側ツリーで中心線上を一番先まで進めた
     ノードまでの経路(phase2_lstair.best_effort_path の中心線版)。"""
@@ -242,4 +269,17 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
                            "profile": [[s, c] for s, c, _ in sw]}
             log(f"  {key}: s={s_min:.0f}cm 余裕{c_min:+.1f}cm "
                 f"(一番厳しい点 {np.round(xyz, 0).tolist()} = {what})")
+            # 持てる姿勢が1つも無い位置(余裕が -inf)は上の最小値に入らない。
+            # 黙って落とすと「一番厳しい所」を見逃すので、別に記録する
+            no_pose = [s for s, c, _ in sw if not np.isfinite(c)]
+            result[key]["no_pose_s"] = no_pose
+            if no_pose:
+                log(f"  {key}: 持てる姿勢が無い位置 s={[round(s) for s in no_pose]}cm"
+                    "(試した姿勢のどれでも、立つ床が無いか傾きの上限を超える)")
+            if with_human:
+                name, terms = limiting_term(space, pose_min, num_carriers)
+                result[key]["limit"] = {"term": name, "terms": terms}
+                if name == "reach":
+                    log(f"  {key}: この値は壁へのめり込みではなく、手の高さが"
+                        "届く範囲から外れている量")
     return result
