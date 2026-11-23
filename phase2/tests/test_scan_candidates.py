@@ -149,7 +149,15 @@ def test_shortage_text_does_not_show_reach_as_centimeters(monkeypatch):
 
 def test_shortage_text_says_how_much_is_missing(monkeypatch):
     monkeypatch.setattr(sp, "judge",
-                        lambda space, **kw: _result(-4.0, s=150.0, part="carrier"))
+                        lambda space, **kw: _result(-4.0, s=150.0, term="body"))
     row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
     text = sc.shortage_text(row)
-    assert "あと4cm足りない" in text and "曲がる所" in text and "運ぶ人" in text
+    assert "あと4cm足りない" in text and "曲がる所" in text and "運ぶ人が壁に当たる" in text
+
+
+def test_shortage_text_names_the_limiting_term_not_the_deepest_point(monkeypatch):
+    # 一番めり込んだ点が家具でも、余裕を決めたのが運搬者と家具の重なりならそう言う
+    monkeypatch.setattr(sp, "judge",
+                        lambda space, **kw: _result(-7.0, term="self", part="furniture"))
+    row = sc.judge_candidates(_Space(), [("棚", 90.0, 40.0, 180.0)], log=lambda *_: None)[0]
+    assert "運ぶ人と家具が重なる" in sc.shortage_text(row)

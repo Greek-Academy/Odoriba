@@ -176,9 +176,14 @@ def shortage_text(row):
     if row["term"] == "reach" and c < 0:
         return "手が届かない"
     where = "曲がる所" if row["at_corner"] else "直線部分"
-    part = "運ぶ人" if row["contact_part"] == "carrier" else "家具"
+    # 何が効いているかは、余裕を決めた項から言う(一番めり込んだ点の部位とは
+    # 食い違うことがある)。項が無い(家具だけの判定)ときは部位から言う
+    what = {"furniture": "家具が壁に当たる", "body": "運ぶ人が壁に当たる",
+            "self": "運ぶ人と家具が重なる"}.get(row["term"])
+    if what is None:
+        what = "運ぶ人が壁に当たる" if row["contact_part"] == "carrier" else "家具が壁に当たる"
     amount = f"余裕{c:.0f}cm" if c >= 0 else f"あと{-c:.0f}cm足りない"
-    return f"{amount}({where}、{part}が当たる、誤差±{row['scan_error_cm']:.0f}cm)"
+    return f"{amount}({where}、{what}、誤差±{row['scan_error_cm']:.0f}cm)"
 
 
 def format_row(row):
