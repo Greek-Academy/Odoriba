@@ -346,21 +346,29 @@ def shortage_text(row):
     return f"{amount}({detail})"
 
 
-def format_row(row):
+def row_parts(row):
+    """1件の結果を、表の列ごとの言葉にする(端末の1行と画面の表で同じ文言を使う)。"""
     w, d, h = row["size"]
     size = f"{w:.0f}×{d:.0f}×{h:.0f}cm"
     if row.get("weight_kg") is not None:
         size += f" {row['weight_kg']:.0f}kg"
-    text = f"{MARKS[row['verdict']]} {row['name']}  {size}  {shortage_text(row)}"
+    extras = []
     carried = row.get("carried_as")
     if carried and carried[2] != h:
-        text += f"  [{carried[2]:.0f}cmの辺を上下にして運ぶ]"
+        extras.append(f"{carried[2]:.0f}cmの辺を上下にして運ぶ")
     limits = row.get("weight_limit_kg")
     if limits:
         # 切り捨てて出す(上限を少しでも超える数字を見せない)
-        text += "  [" + " / ".join(f"{PRESET_TEXT[name]}なら{int(kg)}kgまで"
-                                   for name, kg in limits.items()) + "]"
-    return text
+        extras.append(" / ".join(f"{PRESET_TEXT[name]}なら{int(kg)}kgまで"
+                                 for name, kg in limits.items()))
+    return {"mark": MARKS[row["verdict"]], "name": row["name"], "size": size,
+            "reason": shortage_text(row), "extras": extras}
+
+
+def format_row(row):
+    p = row_parts(row)
+    text = f"{p['mark']} {p['name']}  {p['size']}  {p['reason']}"
+    return text + "".join(f"  [{x}]" for x in p["extras"])
 
 
 def parse_rows(records, header=True):
