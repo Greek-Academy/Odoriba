@@ -192,3 +192,31 @@ def test_plans_do_not_take_a_tiny_tall_fragment_as_stairs():
     plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0, 270.0], [[0, 0], [400, 100]])
     kind, z = _at(plans, 0, 257, 47)
     assert kind == fp.OTHER and np.isnan(z)
+
+
+def test_plans_do_not_take_stacked_furniture_tops_as_stairs():
+    # 調理台(z=90)と、その上の吊り戸棚の天面(z=220)。高さの幅は大きいが、
+    # 面があるのは離れた2つの高さだけなので、階段ではない
+    up = np.vstack([_patch(0, 200, 0, 100, 0), _patch(300, 400, 0, 100, 280),
+                    _patch(220, 280, 20, 80, 90), _patch(220, 280, 20, 80, 220)])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0, 280.0], [[0, 0], [400, 100]])
+    kind, z = _at(plans, 0, 250, 50)
+    assert kind == fp.OTHER and np.isnan(z)
+
+
+def test_plans_do_not_take_furniture_on_the_top_floor_as_stairs():
+    # 一番上の階の、ベッド(z=45+270)と背の高い棚(z=180+270)が並んだ所
+    up = np.vstack([_patch(0, 200, 0, 100, 0), _patch(300, 400, 0, 100, 270),
+                    _patch(310, 350, 20, 80, 315), _patch(350, 390, 20, 80, 450)])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0, 270.0], [[0, 0], [400, 100]])
+    assert _at(plans, 1, 330, 50)[0] == fp.OTHER
+    assert _at(plans, 1, 370, 50)[0] == fp.FLOOR   # 高い棚の下は歩ける
+
+
+def test_plans_do_not_take_a_cluttered_room_on_the_top_floor_as_stairs():
+    # 一番上の階の部屋に、高さが少しずつ違う家具がつながって並んでいる
+    # (高さが続いて見えるが、高い所が床のすぐ横にある)
+    tops = [_patch(300 + 10 * i, 310 + 10 * i, 20, 80, 270 + 40 + 20 * i) for i in range(8)]
+    up = np.vstack([_patch(0, 200, 0, 100, 0), _patch(290, 400, 0, 100, 270), *tops])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0, 270.0], [[0, 0], [400, 100]])
+    assert _at(plans, 1, 345, 50)[0] == fp.OTHER

@@ -64,7 +64,10 @@ FLOOR_BAND = 30.0     # 階の床の高さから上下この幅(cm)の上向き�
 STAIR_SPAN = 60.0     # 階の間のかたまりで、高さの幅がこれ以上(段が3つほど続く)なら階段
 WALL_LO, WALL_HI = 30.0, 200.0   # 床からこの高さの範囲にある縦向きの面を壁の候補にする
 WALL_MIN_SPAN = 60.0  # 1マスの中で縦にこれ以上続いていれば壁(段の蹴込みや低い家具は外す)
+STAIR_FILL_BIN = 20.0  # 階段かどうかを見るときの高さの刻み(cm。段の高さと同じくらい)
+STAIR_FILL = 0.6      # 高さの幅のうち、この割合以上の刻みに面があれば、段が続いているとみる
 STAIR_MIN_CELLS = 20  # これより少ないマスのかたまりは階段にしない(スキャンの荒れの破片)
+STAIR_FOOT = 80.0     # 上の階が見つからない階段は、床に接する所がこの高さ(cm)以下のものだけ
 STAIR_TOUCH = 3       # 階段を出すのは、その階の床からこのマス数以内につながるものだけ
 BLOCK_BELOW = 150.0   # 床の上にこの高さ(cm)未満の上向きの面(机など)があれば、そこには置けない
 DENSITY = 0.3         # 面の上に撒く点の数(1cm²あたり)
@@ -112,9 +115,11 @@ def _stairs_between(grid, pts):
 
     上から見てつながったかたまりごとに高さの幅を見る。段が続いていれば幅が
     大きく、机やベッドの上面は小さい。踊り場は段とつながっているので階段に
-    入る。高さの幅が大きくても、ごく小さいかたまり(スキャンの荒れで出る
-    破片)は階段にしない。(階段のかたまりのリスト, それ以外のマス, マスの高さ)
-    を返す。
+    入る。高さの幅が大きくても、次のかたまりは階段にしない。
+      - ごく小さいかたまり(スキャンの荒れで出る破片)
+      - 高さが飛び飛びのかたまり(机と棚の上面、調理台と吊り戸棚のように、
+        離れた2〜3の高さにだけ面がある)。段は高さが途切れずに続く
+    (階段のかたまりのリスト, それ以外のマス, マスの高さ) を返す。
     """
     from scipy import ndimage
 
@@ -128,8 +133,12 @@ def _stairs_between(grid, pts):
         lo = ndimage.minimum(zmin, where, ids)
         hi = ndimage.maximum(zmax, where, ids)
         size = ndimage.sum(has, where, ids)
-        tall = ids[((hi - lo) >= STAIR_SPAN) & (size >= STAIR_MIN_CELLS)]
-        stairs = [where == i for i in tall]
+        for i in ids[((hi - lo) >= STAIR_SPAN) & (size >= STAIR_MIN_CELLS)]:
+            comp = where == i
+            zs = np.concatenate([zmin[comp], zmax[comp]])
+            bins = np.unique((zs - lo[i - 1]) // STAIR_FILL_BIN)
+            if len(bins) >= STAIR_FILL * ((hi[i - 1] - lo[i - 1]) / STAIR_FILL_BIN + 1):
+                stairs.append(comp)
     other = has.copy()
     for comp in stairs:
         other &= ~comp
@@ -150,6 +159,9 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
     かたまり(途中までしか撮れていない階段など)は、その階にだけ出す。
     一番上の階より上へ続くかたまりも同じ(上の階が狭くて階として見つから
     なかったときや、階段と踊り場だけを撮ったときに、階段へ置けるように)。
+    ただし一番上の階では、部屋に並んだ家具(ベッド・机・棚)のかたまりも
+    高さが続いて見えるので、床に接する所が低いもの(階段の上り口)だけを
+    階段にする。棚のように高い所が床のすぐ横にあるかたまりは家具とみる。
     """
     from scipy import ndimage
 
@@ -197,11 +209,19 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
             z[low] = below[2][low]
         has, mean = floor_cells[i]
         near = ndimage.binary_dilation(has, iterations=STAIR_TOUCH)
+        top = i + 1 == len(levels)
+        furniture = above[1].copy()   # この階の上にある、階段でないと決めた面
         for stairs, _, stair_z in (below, above):
             for comp in stairs:
-                if (comp & near).any():
-                    kind[comp] = STAIR
-                    z[comp] = stair_z[comp]
+                foot = comp & near
+                if not foot.any():
+                    continue
+                if top and stairs is above[0] and stair_z[foot].max() > level + STAIR_FOOT:
+                    kind[comp] = OTHER
+                    furniture |= comp
+                    continue
+                kind[comp] = STAIR
+                z[comp] = stair_z[comp]
         # どの階の床にもつながらない階段のかたまりは、下の階に「家具など」で出す
         upper = floor_cells[i + 1][0] if i + 1 < len(levels) else empty
         near_upper = ndimage.binary_dilation(upper, iterations=STAIR_TOUCH)
@@ -210,7 +230,7 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
                 kind[comp] = OTHER
         # 床が撮れていても、すぐ上に机などの上面があるマスは「家具など」のままにする
         # (高い棚の上面や鴨居の下は歩けるので、床にする)
-        blocked = above[1] & (above[2] < level + BLOCK_BELOW)
+        blocked = furniture & (above[2] < level + BLOCK_BELOW)
         free = has & ~blocked
         kind[free] = FLOOR
         z[free] = mean[free]
