@@ -64,11 +64,16 @@ def test_open_space_passes_without_weight(box):
     assert _judge()["bottleneck"]["capacity_cm"] > 0
 
 
-@pytest.mark.xfail(strict=True, reason="重さが理由なのに、立つ床が無いという説明になる")
 def test_too_heavy_to_hold_flat_is_reported_as_weight(box):
-    # 2人で水平に持つと1人100kg。業者の上限(40kg)を超えるので、どの姿勢でも持てない
+    # 2人で水平に持つと1人100kg。業者の上限(40kg)を超えるので、どの姿勢でも持てない。
+    # 以前は「運搬者の立つ床が見つからない」という違う理由のエラーになっていた
     box.setattr(L, "FURN_WEIGHT_KG", 200.0)
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(sp.TooHeavyError) as e:
         _judge()
-    assert "重すぎ" in str(e.value)
+    assert "1人100kg" in str(e.value) and "上限40kg" in str(e.value)
     assert "床" not in str(e.value)
+
+
+def test_weight_that_can_be_held_flat_is_not_an_error(box):
+    box.setattr(L, "FURN_WEIGHT_KG", 60.0)   # 水平なら1人30kg
+    assert _judge()["bottleneck"]["capacity_cm"] > 0

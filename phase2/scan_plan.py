@@ -20,6 +20,25 @@ import phase2_demo as p
 import phase2_lstair as L
 
 
+class TooHeavyError(ValueError):
+    """水平に持っても1人の負担が上限を超え、どの姿勢でも運べない。"""
+
+
+def check_holdable_flat(num_carriers=None):
+    """重さが与えられていて水平でも持てないなら TooHeavyError を出す。
+
+    この場合は掃引する傾きが1つも無くなり、どの位置も「持てる姿勢が無い」に
+    なる。床が無いのと区別がつかなくなるので、掃引の前に重さが理由だと言う。
+    """
+    if L.max_tilt_deg(num_carriers) is not None:
+        return
+    n = p.NUM_CARRIERS if num_carriers is None else num_carriers
+    load = max(L.carrier_loads_kg(L._pose(0.0, 0.0).as_quat(), n))
+    raise TooHeavyError(
+        f"重すぎて水平でも持てない: {L.FURN_WEIGHT_KG:.0f}kgを{n}人で水平に持つと"
+        f"1人{load:.0f}kgで、1人の上限{L.load_limit_kg():.0f}kgを超える")
+
+
 def _yaw_range(cl, s0, s1):
     """コーナー区間 (s0, s1) の入口と出口の進行方向(度、小さい順)。"""
     a, b = cl.heading_at(s0), cl.heading_at(s1)
@@ -254,6 +273,7 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
             raise ValueError(
                 f"経路が短すぎて掃引できない: 中心線{cl.s_total:.0f}cmに対し、長さ"
                 f"{L.FURN_L:.0f}cmの家具と運搬者の列には{need:.0f}cm以上要る")
+        check_holdable_flat(num_carriers)
         for key, with_human in (("bottleneck_furniture_only", False), ("bottleneck", True)):
             sw = sweep_capacity(space, num_carriers=num_carriers, with_human=with_human)
             finite = [r for r in sw if np.isfinite(r[1])]
