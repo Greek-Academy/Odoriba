@@ -71,6 +71,15 @@ def read_candidates(text):
     return items, None
 
 
+def read_point(p):
+    """床の1点 [x, y, z] を数値3つのリストにする(そう読めなければ None)。"""
+    try:
+        x, y, z = (float(v) for v in p)
+    except (TypeError, ValueError):
+        return None
+    return [x, y, z] if np.isfinite([x, y, z]).all() else None
+
+
 def can_view(row):
     """3Dで見せられる候補か(掃引していない候補は、見せる姿勢が無い)。"""
     return row["verdict"] != "unknown" and not row.get("too_heavy_flat")
@@ -95,6 +104,9 @@ class App:
         self.num_carriers = num_carriers
         self.fixed_seed = seed
         self.items_text = items_text
+        # 判定中は carried_weight が L.CARRIER_PRESET を一時的に書き換えるので、
+        # 既定値は起動時に控えたものを使う
+        self.default_preset = L.CARRIER_PRESET
         self.space = None
         self.route = None     # いまの中心線の (出発点, 目的地)
         self.results = {}     # 判定ジョブ -> 3Dを作り直すのに要る値
@@ -117,14 +129,14 @@ class App:
                 "carriers": self.num_carriers, "items": self.items_text,
                 "presets": [{"key": k, "label": f"{SC.PRESET_TEXT[k]}(1人{kg:.0f}kgまで)"}
                             for k, kg in L.CARRIER_PRESETS.items()],
-                "preset": L.CARRIER_PRESET,
+                "preset": self.default_preset,
                 "legend": SC.LEGEND, "notes": list(SC.NOTES)}
 
     def _ensure_space(self, job, start):
         sp = self.space
         if sp is not None and float(sp.clearance_points([np.asarray(start) + [0, 0, 100]])[0]) > 0:
             return sp
-        self.jobs[job]["message"] = "空間を作っています(約1分)..."
+        self.jobs[job] = {"state": "running", "message": "空間を作っています(約1分)..."}
         seed = self.fixed_seed or SS.seed_near(self.mesh, start)
         self.space = SS.ScanSpace(self.mesh, seed)
         self.route = None
@@ -203,8 +215,10 @@ class App:
                 # 表と同じ向き・同じ重さで判定し直す(一括判定は姿勢を残していない)
                 with SC.furniture_dims(a, b, up), \
                         SC.carried_weight(row.get("weight_kg"), res["carried_by"]):
+                    # tilt_detail なしだと、重さで決まる上限の傾きも試すので、
+                    # 表より少し甘い値が出る。表と同じ傾きの格子で判定する
                     result = SP.judge(space, num_carriers=self.num_carriers, rrt=False,
-                                      log=lambda *_: None)
+                                      tilt_detail=True, log=lambda *_: None)
                     SV.render_html(space, self.mesh, result, str(out),
                                    num_carriers=self.num_carriers,
                                    include_plotlyjs="/plotly.min.js",
@@ -306,6 +320,14 @@ function el(tag, text, cls) {
   return e;
 }
 let judged = null, busy = false;
+const LOST = 'サーバーと通信できませんでした(scan_picker.py が動いているか確かめてください)';
+// body があれば POST、無ければ GET。通信に失敗したら null を返す
+async function ask(path, body) {
+  try {
+    const r = await fetch(path, body ? {method: 'POST', body: JSON.stringify(body)} : undefined);
+    return await r.json();
+  } catch (e) { return null; }
+}
 function showRows(rows, done) {
   const t = document.getElementById('rows');
   t.replaceChildren();
@@ -335,11 +357,14 @@ async function view(i, name) {
   busy = true;
   const fr = document.getElementById('result');
   fr.style.display = 'none';
-  const r = await (await fetch('/view', {method: 'POST', body: JSON.stringify({job: judged, index: i})})).json();
+  const lost = () => { busy = false; viewStatus(LOST); };
+  const r = await ask('/view', {job: judged, index: i});
+  if (!r) { lost(); return; }
   if (r.error) { busy = false; viewStatus(r.error); return; }
   const t0 = Date.now();
   const poll = async () => {
-    const s = await (await fetch('/status?job=' + r.job)).json();
+    const s = await ask('/status?job=' + r.job);
+    if (!s) { lost(); return; }
     if (s.state === 'running') { viewStatus(name + ': ' + s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
     busy = false;
     if (s.state === 'error') { viewStatus(name + ': 3Dを作れませんでした: ' + s.message); return; }
@@ -359,12 +384,14 @@ async function judge() {
   document.getElementById('result').style.display = 'none';
   const body = {start: pts.start, goal: pts.goal, items: document.getElementById('items').value,
     carried_by: document.getElementById('by').value};
-  const r = await (await fetch('/judge', {method: 'POST', body: JSON.stringify(body)})).json();
+  const r = await ask('/judge', body);
+  if (!r) { status(LOST); return; }
   if (r.error) { status(r.error); return; }
   busy = true;
   const t0 = Date.now();
   const poll = async () => {
-    const s = await (await fetch('/status?job=' + r.job)).json();
+    const s = await ask('/status?job=' + r.job);
+    if (!s) { busy = false; status(LOST); return; }
     showRows(s.rows, s.state === 'done');
     if (s.state === 'running') { status(s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
     busy = false;
@@ -439,19 +466,31 @@ def make_handler(app):
             if path not in ("/judge", "/view"):
                 self.send_error(404)
                 return
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            try:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            except (TypeError, ValueError):
+                body = None
+            if not isinstance(body, dict):
+                self._json({"error": "要求が読めませんでした"})
+                return
             if path == "/view":
-                job, error = app.submit_view(body.get("job"), body.get("index"))
+                job = body.get("job")
+                job, error = app.submit_view(job if isinstance(job, str) else None,
+                                             body.get("index"))
                 self._json({"error": error} if error else {"job": job})
                 return
             items, error = read_candidates(str(body.get("items", "")))
-            carried_by = body.get("carried_by") or L.CARRIER_PRESET
-            if error is None and carried_by not in L.CARRIER_PRESETS:
+            carried_by = body.get("carried_by") or app.default_preset
+            if error is None and not (isinstance(carried_by, str)
+                                      and carried_by in L.CARRIER_PRESETS):
                 error = "誰が運ぶかの指定が正しくありません"
+            start, goal = read_point(body.get("start")), read_point(body.get("goal"))
+            if error is None and (start is None or goal is None):
+                error = "出発点と目的地の両方を置いてください"
             if error:
                 self._json({"error": error})
                 return
-            self._json({"job": app.submit(body["start"], body["goal"], items, carried_by)})
+            self._json({"job": app.submit(start, goal, items, carried_by)})
 
     return Handler
 
