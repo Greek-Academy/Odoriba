@@ -6,13 +6,16 @@
         --item ソファA 180 85 80 --item 棚B 90 40 180
     python scan_candidates.py <scan.obj> --csv 候補.csv --any-side
     python scan_candidates.py --route --item 小 60 40 40 --item 大 200 90 90
+    python scan_candidates.py --route --item 冷蔵庫 70 65 180 100 --carried-by diy
 
-寸法は 幅 奥行 高さ(cm)。候補ごとに ○(入る見込み)/△(際どい)/×(入らない)と、
+寸法は 幅 奥行 高さ(cm)。重さ(kg)が分かれば5つ目に書く(CSVなら5列目)。候補ごとに ○(入る見込み)/△(際どい)/×(入らない)と、
 判定を決めた所の余裕を表にする。○は掃引だけで出した見込みで、断定ではない。「何cmまで入る」と1つの数字にしないのは、
 幅・奥行・高さが取り合いになり、1つの上限では言えないため。
 
 入る見込み・際どい候補には「何kgまでなら運べるか」も付ける。重さは傾けてよい
 角度にだけ効くので、通すのに要る傾きから逆算できる(重さを聞かなくても出せる)。
+重さを書いた候補は、その重さで傾けられる角度までで判定し、重さのせいで
+入らないときは「重すぎる」と何kgまでなら入るかを出す。
 
 判定は scan_plan.judge の掃引(1件あたり十数秒〜1分)を寸法を変えて
 繰り返すだけで、可搬性オラクルもプランナーも変えていない。
@@ -100,6 +103,21 @@ def furniture_dims(a, b, height):
         yield
     finally:
         L.FURN_L, L.FURN_W, L.FURN_H = orig
+
+
+@contextlib.contextmanager
+def carried_weight(weight_kg, carried_by):
+    """家具の重さと、誰が運ぶか(phase2_lstair のグローバル)を一時的に差し替える。
+
+    weight_kg が None なら重さなし(傾きの上限は固定の値)で判定する。
+    """
+    orig = (L.FURN_WEIGHT_KG, L.CARRIER_PRESET)
+    try:
+        L.FURN_WEIGHT_KG = None if weight_kg is None else float(weight_kg)
+        L.CARRIER_PRESET = carried_by
+        yield
+    finally:
+        L.FURN_WEIGHT_KG, L.CARRIER_PRESET = orig
 
 
 def orientations(w, d, h, any_side=False):
@@ -209,49 +227,88 @@ def _weight_info(space, result, row, num_carriers):
     支えきれる重さが、判定が変わらない重さの上限になる。
     掃引の傾きは15度刻みなので、求まる傾きは実際より大きめ、上限の重さは
     小さめ(厳しめ)に出る。家具の寸法を差し替えた状態で呼ぶこと。
+
+    重さを与えていて、もっと傾けられれば判定が良くなる場合(重さのせいで
+    傾けられない)は weight_limited を真にし、良い方の判定(verdict_if_lighter)と
+    それに届く重さの上限(weight_limit_if_lighter_kg)も入れる。
     """
     by_tilt = result.get("bottleneck_by_tilt")
-    if not by_tilt or row["verdict"] not in ("ok", "close"):
+    if not by_tilt:
         return {}
+
+    def limits(tilt):
+        return {name: float(L.weight_limit_kg(tilt, num_carriers, name))
+                for name in L.CARRIER_PRESETS}
+
     verdicts = [(e["max_tilt_deg"], _decide(space, e)[0]) for e in by_tilt]
-    tilt = _needed_tilt(verdicts, row["verdict"], result["bottleneck"]["max_tilt_deg"])
-    return {"needed_tilt_deg": tilt,
-            "weight_limit_kg": {name: float(L.weight_limit_kg(tilt, num_carriers, name))
-                                for name in L.CARRIER_PRESETS}}
+    max_tilt = result["bottleneck"]["max_tilt_deg"]
+    info = {}
+    if row["verdict"] in ("ok", "close"):
+        tilt = _needed_tilt(verdicts, row["verdict"], max_tilt)
+        info.update(needed_tilt_deg=tilt, weight_limit_kg=limits(tilt))
+    if L.FURN_WEIGHT_KG is not None:
+        best = max((v for _, v in verdicts), key=_ORDER.get)
+        if _ORDER[best] > _ORDER[row["verdict"]]:
+            tilt = _needed_tilt(verdicts, best, 90.0)
+            info.update(weight_limited=True, verdict_if_lighter=best,
+                        weight_limit_if_lighter_kg=limits(tilt))
+    return info
+
+
+def _too_heavy_row(num_carriers):
+    """水平に持っても1人の負担が上限を超える候補の行(掃引はしていない)。"""
+    load = max(L.carrier_loads_kg(L._pose(0.0, 0.0).as_quat(), num_carriers))
+    return {"verdict": "ng", "term": "load", "too_heavy_flat": True,
+            "capacity_cm": None, "no_pose_s": [], "at_corner": False,
+            "flat_load_kg": float(load), "load_limit_kg": float(L.load_limit_kg())}
 
 
 def _rank(row):
     """向きを比べるときの良さ(大きいほど良い)。"""
-    return (_ORDER[row["verdict"]], not row["no_pose_s"], row["capacity_cm"])
+    c = row["capacity_cm"]
+    return (_ORDER[row["verdict"]], not row["no_pose_s"], -np.inf if c is None else c)
 
 
-def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=print):
-    """候補 [(名前, 幅, 奥行, 高さ), ...] を1件ずつ判定する。
+def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=print,
+                     carried_by=None):
+    """候補 [(名前, 幅, 奥行, 高さ) or (名前, 幅, 奥行, 高さ, 重さkg), ...] を1件ずつ判定する。
 
     space は中心線を作り終えた ScanSpace。戻り値は候補ごとの dict のリスト
     (入力と同じ順)。判定できなかった候補(経路が短すぎる等)は verdict が
     "unknown" で、理由が error に入る。1件の失敗で残りを止めない。
+
+    重さがある候補は、下側の人の負担が1人の上限を超えない傾きまでで判定する
+    (重さが無い候補は固定の傾き上限)。carried_by は誰が運ぶか
+    (phase2_lstair.CARRIER_PRESETS の名前。既定は CARRIER_PRESET)で、
+    1人の上限を決める。
     """
+    carried_by = carried_by or L.CARRIER_PRESET
     rows = []
-    for name, w, d, h in candidates:
+    for name, w, d, h, *rest in candidates:
+        weight = float(rest[0]) if rest and rest[0] is not None else None
         best, errors = None, []
         for a, b, up in orientations(w, d, h, any_side):
-            with furniture_dims(a, b, up):
+            with furniture_dims(a, b, up), carried_weight(weight, carried_by):
                 dims = [L.FURN_L, L.FURN_W, L.FURN_H]
                 try:
                     result = SP.judge(space, num_carriers=num_carriers, rrt=False,
                                       tilt_detail=True, log=lambda *_: None)
+                except SP.TooHeavyError:
+                    row = _too_heavy_row(num_carriers)
                 except ValueError as e:
                     errors.append(str(e))
                     continue
-                row = _summarize(space, result)
-                row.update(_weight_info(space, result, row, num_carriers))
+                else:
+                    row = _summarize(space, result)
+                    row.update(_weight_info(space, result, row, num_carriers))
             row["carried_as"] = dims
             if best is None or _rank(row) > _rank(best):
                 best = row
         if best is None:
             best = {"verdict": "unknown", "error": errors[0] if errors else "向きが無い"}
         row = {"name": name, "size": [float(w), float(d), float(h)], **best}
+        if weight is not None:
+            row.update(weight_kg=weight, carried_by=carried_by)
         rows.append(row)
         log(format_row(row))
     return rows
@@ -262,9 +319,18 @@ def shortage_text(row):
 
     「あと何cm」と言えるのは壁との距離の項だけ。手が届く範囲の項が効いて
     いるときの値は別の量なので、cm では出さない(decisions.md 2026-11-23)。
+    重さのせいで入らないときも同じで、何kgまでなら入るかを言う。
     """
     if row["verdict"] == "unknown":
         return row["error"]
+    who = PRESET_TEXT.get(row.get("carried_by"))
+    if row.get("too_heavy_flat"):
+        return (f"重すぎる(水平に持っても1人{row['flat_load_kg']:.0f}kg、"
+                f"{who}の上限は1人{row['load_limit_kg']:.0f}kg)")
+    if row.get("weight_limited") and row["verdict"] == "ng":
+        kg = row["weight_limit_if_lighter_kg"][row["carried_by"]]
+        then = "入る見込み" if row["verdict_if_lighter"] == "ok" else "際どい"
+        return f"重すぎる({who}が運ぶなら{int(kg)}kgまでで{then})"
     if row["no_pose_s"]:
         return "持てる姿勢が無い所がある"
     c = row["capacity_cm"]
@@ -279,7 +345,10 @@ def shortage_text(row):
 
 def format_row(row):
     w, d, h = row["size"]
-    text = f"{MARKS[row['verdict']]} {row['name']}  {w:.0f}×{d:.0f}×{h:.0f}cm  {shortage_text(row)}"
+    size = f"{w:.0f}×{d:.0f}×{h:.0f}cm"
+    if row.get("weight_kg") is not None:
+        size += f" {row['weight_kg']:.0f}kg"
+    text = f"{MARKS[row['verdict']]} {row['name']}  {size}  {shortage_text(row)}"
     carried = row.get("carried_as")
     if carried and carried[2] != h:
         text += f"  [{carried[2]:.0f}cmの辺を上下にして運ぶ]"
@@ -292,10 +361,12 @@ def format_row(row):
 
 
 def read_csv(path):
-    """名前,幅,奥行,高さ のCSVを読む。(候補, 読めなかった行) を返す。
+    """名前,幅,奥行,高さ[,重さkg] のCSVを読む。(候補, 読めなかった行) を返す。
 
     1行目が数値でなければ見出しとして飛ばす。それ以外で読めない行は、
     黙って落とすと候補が減ったことに気づけないので、呼び出し側に返す。
+    重さ(5列目)は省いてよい。書いてあって数値でない行は、重さなしとして
+    判定すると甘くなるので、読めない行にする。
     """
     items, skipped = [], []
     with open(path, newline="", encoding="utf-8-sig") as f:
@@ -303,7 +374,10 @@ def read_csv(path):
             if not any(x.strip() for x in rec):
                 continue
             try:
-                items.append((rec[0], float(rec[1]), float(rec[2]), float(rec[3])))
+                item = (rec[0], float(rec[1]), float(rec[2]), float(rec[3]))
+                if len(rec) > 4 and rec[4].strip():
+                    item += (float(rec[4]),)
+                items.append(item)
             except (ValueError, IndexError):
                 if i > 0:
                     skipped.append(",".join(rec))
@@ -352,20 +426,26 @@ def main():
     parser.add_argument("--goal", type=float, nargs=3, metavar=("X", "Y", "Z"))
     parser.add_argument("--seed", type=float, nargs=3, metavar=("X", "Y", "Z"),
                         help="自由空間の中の1点(既定は出発点の上から選ぶ)")
-    parser.add_argument("--item", nargs=4, action="append", default=[],
-                        metavar=("NAME", "W", "D", "H"),
-                        help="候補の名前と 幅 奥行 高さ(cm)。何回でも書ける")
-    parser.add_argument("--csv", help="名前,幅,奥行,高さ のCSV")
+    parser.add_argument("--item", nargs="+", action="append", default=[],
+                        metavar="NAME W D H [KG]",
+                        help="候補の名前と 幅 奥行 高さ(cm)、分かれば重さ(kg)。何回でも書ける")
+    parser.add_argument("--csv", help="名前,幅,奥行,高さ[,重さkg] のCSV")
     parser.add_argument("--carriers", type=int, choices=(1, 2), default=2)
+    parser.add_argument("--carried-by", choices=sorted(L.CARRIER_PRESETS),
+                        default=L.CARRIER_PRESET,
+                        help="重さを書いた候補を誰が運ぶか。mover=業者(1人40kgまで)、"
+                             "diy=自分たち(1人25kgまで)。どちらも仮の値")
     parser.add_argument("--any-side", action="store_true",
                         help="寝かせて運ぶ向きも試す(既定は高さを上下にしたまま)")
     parser.add_argument("--json", help="結果をJSONで書き出す先")
     args = parser.parse_args()
 
     try:
-        items = [(n, float(w), float(d), float(h)) for n, w, d, h in args.item]
+        items = [(n, *map(float, nums)) for n, *nums in args.item]
     except ValueError:
-        parser.error("--item は 名前 幅 奥行 高さ(寸法は数値)")
+        parser.error("--item は 名前 幅 奥行 高さ [重さ](寸法と重さは数値)")
+    if any(len(item) not in (4, 5) for item in items):
+        parser.error("--item は 名前 幅 奥行 高さ の4つか、重さを足した5つ")
     if args.csv:
         from_csv, skipped = read_csv(args.csv)
         items += from_csv
@@ -375,20 +455,25 @@ def main():
         parser.error("候補が無い(--item か --csv で指定する)")
     for name, *size in items:
         if min(size) <= 0:
-            parser.error(f"{name}: 寸法は正の数(cm)で指定する")
+            parser.error(f"{name}: 寸法と重さは正の数(cm、kg)で指定する")
 
     space = build_space(args, parser)
     print(f"経路の長さ {space.centerline.s_total:.0f}cm、運ぶ人 {args.carriers}人、"
           f"候補 {len(items)}件")
+    if any(len(item) == 5 for item in items):
+        print(f"重さを書いた候補は、{PRESET_TEXT[args.carried_by]}が運ぶ"
+              f"(1人{L.CARRIER_PRESETS[args.carried_by]:.0f}kgまで)として判定")
     print(LEGEND)
     rows = judge_candidates(space, items, num_carriers=args.carriers,
-                            any_side=args.any_side)
+                            any_side=args.any_side, carried_by=args.carried_by)
     print("\n注意:")
     for note in NOTES:
         print(f"  - {note}")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump({"carriers": args.carriers, "any_side": args.any_side,
+                       "carried_by": args.carried_by,
+                       "load_limit_kg": dict(L.CARRIER_PRESETS),
                        "centerline_length": space.centerline.s_total,
                        "notes": list(NOTES), "candidates": rows},
                       f, ensure_ascii=False, indent=1)

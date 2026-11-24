@@ -265,3 +265,79 @@ def test_weight_limit_is_not_given_for_a_candidate_that_does_not_fit(monkeypatch
     row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
     assert row["verdict"] == "ng" and "weight_limit_kg" not in row
     assert "kgまで" not in sc.format_row(row)
+
+
+# ---- 重さを書いた候補 ----
+
+def _judge_by_weight(space, **kwargs):
+    """30度傾ければ通る経路。重さで決まる傾きの上限までの結果を返す。"""
+    sp.check_holdable_flat(kwargs["num_carriers"])
+    return _result_by_tilt(_TILTS_PASS_FROM_30, max_tilt=L.max_tilt_deg(kwargs["num_carriers"]))
+
+
+def _judge_weights(monkeypatch, weights, **kwargs):
+    monkeypatch.setattr(sp, "judge", _judge_by_weight)
+    cands = [(f"箱{w:.0f}", 100.0, 45.0, 60.0, w) for w in weights]
+    return sc.judge_candidates(_Space(), cands, log=lambda *_: None, **kwargs)
+
+
+def test_weight_within_the_limit_does_not_change_the_verdict(monkeypatch):
+    # 30度傾ければ通る。業者ならその傾きで59kgまで(上のテストと同じ箱)
+    row = _judge_weights(monkeypatch, [59.0])[0]
+    assert row["verdict"] == "ok" and "weight_limited" not in row
+    assert row["weight_kg"] == 59.0 and row["carried_by"] == "mover"
+    assert "100×45×60cm 59kg" in sc.format_row(row)
+
+
+def test_weight_over_the_limit_is_ng_and_says_how_light_it_must_be(monkeypatch):
+    row = _judge_weights(monkeypatch, [60.0])[0]
+    assert row["verdict"] == "ng" and row["weight_limited"]
+    assert row["verdict_if_lighter"] == "ok"
+    assert sc.shortage_text(row) == "重すぎる(業者が運ぶなら59kgまでで入る見込み)"
+
+
+def test_weight_too_heavy_to_hold_flat_is_ng_not_unknown(monkeypatch):
+    row = _judge_weights(monkeypatch, [200.0])[0]
+    assert row["verdict"] == "ng" and row["too_heavy_flat"]
+    assert sc.shortage_text(row) == "重すぎる(水平に持っても1人100kg、業者の上限は1人40kg)"
+    assert sc.format_row(row).startswith("× 箱200  100×45×60cm 200kg  重すぎる")
+
+
+def test_heavier_never_gets_a_better_verdict(monkeypatch):
+    rows = _judge_weights(monkeypatch, [10.0, 40.0, 59.0, 60.0, 80.0, 81.0, 300.0])
+    ranks = [sc._ORDER[r["verdict"]] for r in rows]
+    assert ranks == sorted(ranks, reverse=True)
+    assert [r["verdict"] for r in rows][:3] == ["ok"] * 3
+
+
+def test_carried_by_ourselves_uses_the_lower_limit(monkeypatch):
+    # 45kgは業者なら通る(59kgまで)が、自分たちでは通らない(37kgまで)
+    assert _judge_weights(monkeypatch, [45.0])[0]["verdict"] == "ok"
+    row = _judge_weights(monkeypatch, [45.0], carried_by="diy")[0]
+    assert row["verdict"] == "ng"
+    assert sc.shortage_text(row) == "重すぎる(自分たちが運ぶなら37kgまでで入る見込み)"
+
+
+def test_weight_does_not_stay_after_judging(monkeypatch):
+    before = (L.FURN_WEIGHT_KG, L.CARRIER_PRESET)
+    _judge_weights(monkeypatch, [45.0, 200.0], carried_by="diy")
+    assert (L.FURN_WEIGHT_KG, L.CARRIER_PRESET) == before
+
+
+def test_candidates_with_and_without_weight_can_be_mixed(monkeypatch):
+    monkeypatch.setattr(sp, "judge", _judge_by_weight)
+    rows = sc.judge_candidates(_Space(), [("重さなし", 100.0, 45.0, 60.0),
+                                          ("重い", 100.0, 45.0, 60.0, 70.0)],
+                               log=lambda *_: None)
+    assert [r["verdict"] for r in rows] == ["ok", "ng"]
+    assert "weight_kg" not in rows[0] and rows[1]["weight_kg"] == 70.0
+
+
+def test_read_csv_takes_an_optional_weight_column(tmp_path):
+    path = tmp_path / "c.csv"
+    lines = ["名前,幅,奥行,高さ,重さ", "ソファ,180,85,80,", "冷蔵庫,70,65,180,100",
+             "棚,90,40,180,重い"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    items, skipped = sc.read_csv(path)
+    assert items == [("ソファ", 180.0, 85.0, 80.0), ("冷蔵庫", 70.0, 65.0, 180.0, 100.0)]
+    assert skipped == ["棚,90,40,180,重い"]
