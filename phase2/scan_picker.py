@@ -7,13 +7,13 @@
     python scan_picker.py --route                    # 検証用の合成経路(route_env)で
     python scan_picker.py <scan.obj> --furniture 180 60 40 --carriers 2
 
-ブラウザに床を上から見た図(高さで色分け)が出る。「出発点を置く」「目的地を
-置く」を選んで床をクリックし、候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を
+ブラウザに階ごとの間取り図(壁・床・階段。scan_floorplan が作る)が出る。
+「出発点を置く」「目的地を置く」を選んで床か階段をクリックし(階が2つ以上
+あればタブで切り替える)、候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を
 1行に1件ずつ書いて「判定する」を押すと、裏で掃引(1件あたり十数秒〜1分)を
 回して、候補ごとの ○/△/× と理由を表で出す(scan_candidates と同じ判定)。
 表の「3Dで見る」を押すと、その候補が一番狭い所でどう詰まるかを3D
-(scan_viewer)で表示する。階段のように床が上下に重なる所は、表示する高さの
-範囲を絞ってから置く。
+(scan_viewer)で表示する。
 
 計算は時間がかかるので、要求を受けたらすぐ返し(ジョブ番号)、ブラウザが
 進み具合を問い合わせる形にしている(同期APIにしない、という方針どおり)。
@@ -33,10 +33,10 @@ from urllib.parse import urlparse, parse_qs
 
 import numpy as np
 import plotly
-import trimesh
 
 import phase2_lstair as L
 import scan_candidates as SC
+import scan_floorplan as FP
 import scan_plan as SP
 import scan_space as SS
 import scan_viewer as SV
@@ -93,7 +93,7 @@ def shown_row(row):
 class App:
     """読み込んだスキャンと、判定ジョブの状態を持つ。
 
-    床の図は撮れた床(上向きの面)すべてから作り、空間(ScanSpace)は判定の
+    間取り図は撮れた面すべてから作り(scan_floorplan)、空間(ScanSpace)は判定の
     ときに出発点の上を起点にして作る。起点を自動で選ぶと、つながっていない
     小さな部屋に入って、そこにしか置けなくなることがあるため。一度作った
     空間は、次の出発点がその中にあれば使い回す(作るのに約1分かかる)。
@@ -110,22 +110,14 @@ class App:
         self.space = None
         self.route = None     # いまの中心線の (出発点, 目的地)
         self.results = {}     # 判定ジョブ -> 3Dを作り直すのに要る値
-        self.floor = self._floor_points()
+        self.plans = FP.to_json(FP.build_plans(mesh))
         self.jobs = {}
         self.lock = threading.Lock()   # 中心線は ScanSpace に1つなので判定は1件ずつ
 
-    def _floor_points(self, n=30000):
-        """撮れた床(上向きの面)の上に、面積に比例して点を撒く(床の図用)。"""
-        nz = SS._floor_facing_z(self.mesh)
-        faces = np.flatnonzero(nz > 0.9)
-        sub = self.mesh.submesh([faces], append=True)
-        pts, _ = trimesh.sample.sample_surface(sub, n, seed=0)
-        return pts
-
     def floor_json(self):
-        f = self.floor
-        return {"x": np.round(f[:, 0], 1).tolist(), "y": np.round(f[:, 1], 1).tolist(),
-                "z": np.round(f[:, 2], 1).tolist(),
+        return {"plans": self.plans,
+                "kinds": {"nothing": FP.NOTHING, "floor": FP.FLOOR, "stair": FP.STAIR,
+                          "other": FP.OTHER, "wall": FP.WALL},
                 "carriers": self.num_carriers, "items": self.items_text,
                 "presets": [{"key": k, "label": f"{SC.PRESET_TEXT[k]}(1人{kg:.0f}kgまで)"}
                             for k, kg in L.CARRIER_PRESETS.items()],
@@ -249,20 +241,26 @@ PAGE = """<!doctype html>
  tr.ok td.mark { color: #27ae60; } tr.close td.mark { color: #d68910; }
  tr.ng td.mark { color: #c0392b; } tr.unknown td.mark { color: #888; }
  #notes { display: none; }
+ #tabs button.on { background: #555; color: white; }
+ .key { display: inline-block; width: 14px; height: 14px; border: 1px solid #999;
+        vertical-align: middle; margin: 0 4px 0 12px; }
 </style></head><body>
 <h2>1. 出発点と目的地を床に置く</h2>
 <div class="row">
  <button id="mStart" class="on" onclick="setMode('start')">● 出発点を置く</button>
  <button id="mGoal" onclick="setMode('goal')">■ 目的地を置く</button>
 </div>
-<div class="row">表示する床の高さ:
- <input id="zmin" type="number" step="10" style="width:70px"> 〜
- <input id="zmax" type="number" step="10" style="width:70px"> cm
- <button onclick="redraw()">絞る</button> <button onclick="resetZ()">すべて</button>
- <span class="note">階段のように床が上下に重なる所は、高さを絞ってから置く</span>
-</div>
+<div class="row" id="tabs"></div>
 <div class="note" id="info"></div>
 <div id="plan" style="width:100%;height:560px"></div>
+<div class="note">
+ <span class="key" style="background:#333;margin-left:0"></span>壁
+ <span class="key" style="background:#dcdcdc"></span>床(置ける)
+ <span class="key" style="background:#8fbde6"></span>階段(置ける)
+ <span class="key" style="background:#f1e9d8"></span>家具など(置けない)
+ <span class="key" style="background:#fff"></span>撮れていない所
+</div>
+<div class="row" id="placed"></div>
 <h2>2. 運びたい家具の候補を書く</h2>
 <div class="row">
  <textarea id="items"></textarea>
@@ -278,38 +276,50 @@ PAGE = """<!doctype html>
 <div class="note" id="notes"></div>
 <script>
 let F = null, mode = 'start', pts = {start: null, goal: null};
+let cur = 0, placedOn = {start: null, goal: null};
+const NAMES = {start: '出発点', goal: '目的地'};
+// マスの種類(何もない・床・階段・家具など・壁)の色。値は 0〜4 で、境目を 0.2 刻みに置く
+const COLORS = ['#ffffff', '#dcdcdc', '#8fbde6', '#f1e9d8', '#333333'];
+const SCALE = COLORS.flatMap((c, i) => [[i / 5, c], [(i + 1) / 5, c]]);
 function setMode(m) {
   mode = m;
   document.getElementById('mStart').className = m === 'start' ? 'on' : '';
   document.getElementById('mGoal').className = m === 'goal' ? 'on' : '';
 }
-function zrange() {
-  return [parseFloat(document.getElementById('zmin').value), parseFloat(document.getElementById('zmax').value)];
-}
-function resetZ() {
-  document.getElementById('zmin').value = Math.floor(Math.min(...F.z));
-  document.getElementById('zmax').value = Math.ceil(Math.max(...F.z));
+function setFloor(i) {
+  cur = i;
+  const tabs = document.getElementById('tabs');
+  [...tabs.children].forEach((b, j) => { b.className = j === i ? 'on' : ''; });
   redraw();
 }
 function redraw() {
-  const [lo, hi] = zrange();
-  const x = [], y = [], z = [];
-  for (let i = 0; i < F.x.length; i++) if (F.z[i] >= lo && F.z[i] <= hi) { x.push(F.x[i]); y.push(F.y[i]); z.push(F.z[i]); }
-  const data = [{x, y, mode: 'markers', type: 'scattergl', customdata: z,
-    marker: {size: 5, color: z, colorscale: 'Viridis', colorbar: {title: '床の高さ(cm)'}},
-    hovertemplate: 'x=%{x} y=%{y} 高さ=%{customdata}cm<extra></extra>'}];
-  for (const [k, sym, col, name] of [['start', 'circle', '#27ae60', '出発点'], ['goal', 'square', '#c0392b', '目的地']]) {
+  const P = F.plans, f = P.floors[cur];
+  const data = [{type: 'heatmap', z: f.kind, x0: P.x0 + P.cell / 2, dx: P.cell, y0: P.y0 + P.cell / 2, dy: P.cell,
+    zmin: -0.5, zmax: 4.5, colorscale: SCALE, showscale: false, hoverinfo: 'none'}];
+  for (const [k, sym, col] of [['start', 'circle', '#27ae60'], ['goal', 'square', '#c0392b']]) {
     const p = pts[k];
-    if (p) data.push({x: [p[0]], y: [p[1]], mode: 'markers+text', type: 'scatter', text: [name], textposition: 'top center',
-      marker: {size: 18, symbol: sym, color: col, line: {color: 'black', width: 2}}, hoverinfo: 'skip'});
+    if (p && placedOn[k] === cur) data.push({x: [p[0]], y: [p[1]], mode: 'markers+text', type: 'scatter', text: [NAMES[k]], textposition: 'top center',
+      textfont: {size: 15, color: col}, marker: {size: 18, symbol: sym, color: col, line: {color: 'black', width: 2}}, hoverinfo: 'skip'});
   }
-  Plotly.react('plan', data, {xaxis: {title: 'x (cm)', scaleanchor: 'y'}, yaxis: {title: 'y (cm)'},
-    margin: {t: 20}, showlegend: false, dragmode: 'pan'}, {scrollZoom: true});
+  const axis = {showgrid: false, zeroline: false, showticklabels: false, ticks: ''};
+  Plotly.react('plan', data, {xaxis: {...axis, constrain: 'domain'}, yaxis: {...axis, scaleanchor: 'x'},
+    margin: {t: 10, b: 10, l: 10, r: 10}, showlegend: false, dragmode: 'pan', plot_bgcolor: '#fff'}, {scrollZoom: true, displayModeBar: false});
+  // 置いた場所を言葉でも出す(別の階に置いた印は、いまの図には出ないため)
+  const where = ['start', 'goal'].map(k => NAMES[k] + ': ' +
+    (pts[k] ? (F.plans.floors.length > 1 ? F.plans.floors[placedOn[k]].name + 'に置いた' : '置いた') : 'まだ置いていない'));
+  document.getElementById('placed').textContent = where.join(' / ');
 }
 function onClick(ev) {
   const p = ev.points[0];
   if (p.curveNumber !== 0) return;
-  pts[mode] = [p.x, p.y, p.customdata];
+  const [iy, ix] = p.pointIndex, f = F.plans.floors[cur];
+  const z = f.z[iy][ix], kind = f.kind[iy][ix];
+  if (z === null || (kind !== F.kinds.floor && kind !== F.kinds.stair)) {
+    document.getElementById('placed').textContent = 'そこには置けません。床(灰色)か階段(青)の上をクリックしてください';
+    return;
+  }
+  pts[mode] = [p.x, p.y, z];
+  placedOn[mode] = cur;
   if (mode === 'start') setMode('goal');
   redraw();
 }
@@ -407,7 +417,13 @@ function status(t) { document.getElementById('status').textContent = t; }
 fetch('/floor').then(r => r.json()).then(d => {
   F = d;
   document.getElementById('info').textContent = '運ぶ人 ' + d.carriers + '人' +
-    ' / 色のついた点が撮れた床。クリックで置く(段や家具の上面も含むので、歩く床の上に置く)';
+    ' / スキャンから作った間取り図。床か階段をクリックして置く(ドラッグで動かす、ホイールで拡大)';
+  const tabs = document.getElementById('tabs');
+  if (d.plans.floors.length > 1) d.plans.floors.forEach((f, i) => {
+    const b = el('button', f.name);
+    b.onclick = () => setFloor(i);
+    tabs.appendChild(b);
+  });
   document.getElementById('items').value = d.items;
   const by = document.getElementById('by');
   for (const p of d.presets) { const o = el('option', p.label); o.value = p.key; by.appendChild(o); }
@@ -418,7 +434,7 @@ fetch('/floor').then(r => r.json()).then(d => {
   const ul = el('ul');
   for (const n of d.notes) ul.appendChild(el('li', n));
   notes.appendChild(ul);
-  resetZ();
+  setFloor(0);
   document.getElementById('plan').on('plotly_click', onClick);
 });
 </script></body></html>
