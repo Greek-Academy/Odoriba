@@ -17,8 +17,10 @@
      塗りつぶして決める(スキャンは壁が開いていて水密化できないため)。
      半径 leak_r 未満の穴は通れないとみなし、撮れていない小さな穴から
      塗りつぶしが外へ漏れないようにする
-  2. 床の高さ -- 自由空間の下側の境界のうち、人が立てる広さと頭上の
-     余裕があるものを床とする。同じ(x, y)に複数の床(階段の上下など)が
+  2. 床の高さ -- 自由空間の下側の境界と、撮れた上向きの面のすぐ上のうち、
+     人が立てる広さと頭上の余裕があるものを床とする(下の階の天井が
+     撮れていないと、上の階の床は下からも空間がつながり「下側の境界」に
+     ならないので、上向きの面も使う)。同じ(x, y)に複数の床(階段の上下など)が
      重なるので、高さのヒント(把持点の高さ)より下で一番高い床を返す
   3. 中心線  -- 床の上を出発点から目的地まで歩く経路を、壁から離れる
      ほど安いコストで探し、なめらかにして弧長sの関数にする
@@ -158,6 +160,8 @@ class ScanSpace:
         rep = pts[order][first].astype(np.float32)
         surf = np.zeros(self.shape, dtype=bool)
         surf.flat[surf_lin] = True
+        # 上向きの面(撮れた床)のボクセル。範囲の区切りと、床の検出に使う
+        up_vox = vox[_floor_facing_z(mesh)[face_idx] > 0.9]
 
         # ---- 1b. 撮れた床の範囲で空間を区切る ----
         # 範囲の境目のボクセルを「面」に加える(代表点はボクセルの中心)。
@@ -168,8 +172,7 @@ class ScanSpace:
         real_lin, real_rep = surf_lin, rep
         border = None
         if confine_to_floor:
-            up = _floor_facing_z(mesh)[face_idx] > 0.9
-            allowed = self._floor_space(vox[up])
+            allowed = self._floor_space(up_vox)
             border = allowed & ~nd.binary_erosion(allowed) & ~surf
             add = np.flatnonzero(border)
             surf_lin = np.concatenate([surf_lin, add])
@@ -242,7 +245,9 @@ class ScanSpace:
         self.free = free
         self.phi = np.where(free, unsigned, -unsigned).astype(np.float32)
 
-        self._build_floors()
+        up_surf = np.zeros(self.shape, dtype=bool)
+        up_surf[tuple(up_vox.T)] = True
+        self._build_floors(up_surf)
         self.centerline = None
 
     def _unsigned_field(self, surf, surf_lin, rep, with_index=True):
@@ -348,28 +353,42 @@ class ScanSpace:
 
     # ---- 床 ----
 
-    def _build_floors(self):
+    def _build_floors(self, up_surf):
         """自由空間の下側の境界から床を求め、列(x, y)ごとの床の高さを持つ。
 
+        up_surf: 上向きの面(撮れた床)があるボクセル(3Dの真偽値)
+
         床とみなす条件:
-          - 下のボクセルが自由空間でない(下側の境界)
-          - 頭上 HEADROOM 分の自由空間が続く(手すりの上面などを除く)
+          - 下のボクセルが自由空間でないか、上向きの面である(下側の境界)
+          - 頭上 HEADROOM 分の自由空間が、上向きの面に遮られずに続く
+            (手すりの上面などを除く)
           - 周り1格子(±voxel)も同じ高さの床(人が立てる広さ。細い物の
             上面を除く)
         床の高さは「境界のボクセルの中心 - そこから面までの距離」。
+
+        上向きの面も下側の境界に数えるのは、下の階の天井が撮れていない所の
+        ため。そこでは下の階の空間が上の階の床の裏まで届き、床の面は上も下も
+        自由空間の薄い板になる。「下が自由空間でない」だけだと、面は写って
+        いるのに床にならず、上の階の部屋が歩けない島に分かれる。
+        頭上の余裕も上向きの面で止める。床の面が数cmずれて二重に撮れていると
+        (撮影中の位置ずれ)、層の間の自由空間も候補になる。止めないと、上の層を
+        突き抜けた分まで頭上に数えて、同じ床を二重に登録する。
         """
         h = self.h
         free = self.free
+        solid = ~free | up_surf
         below_solid = np.zeros_like(free)
-        below_solid[:, :, 1:] = free[:, :, 1:] & ~free[:, :, :-1]
-        # 頭上の余裕: 上向きに連続する自由空間の長さ(格子数)
+        below_solid[:, :, 1:] = free[:, :, 1:] & ~up_surf[:, :, 1:] & solid[:, :, :-1]
+        del solid
+        # 頭上の余裕: 上向きに連続する自由空間(上向きの面を除く)の長さ(格子数)
+        open_up = free & ~up_surf
         n_head = int(np.ceil(HEADROOM / h))
         run = np.zeros(free.shape, dtype=np.int32)
         for k in range(free.shape[2] - 1, -1, -1):
             nxt = run[:, :, k + 1] if k + 1 < free.shape[2] else 0
-            run[:, :, k] = np.where(free[:, :, k], nxt + 1, 0)
+            run[:, :, k] = np.where(open_up[:, :, k], nxt + 1, 0)
         cand = below_solid & (run >= n_head)
-        del run
+        del run, open_up
         ci, cj, ck = np.nonzero(cand)
         z = self.lo[2] + ck * h - self.phi[ci, cj, ck]
         # 周り1格子に同じ高さ(±3cm)の床があるか
@@ -551,7 +570,9 @@ class ScanSpace:
         s_node, g_node = nearest(start_xyz), nearest(goal_xyz)
         dist, pred = dijkstra(graph, indices=s_node, return_predecessors=True)
         if not np.isfinite(dist[g_node]):
-            raise ValueError("出発点から目的地まで歩ける床がつながっていない")
+            raise ValueError("出発点から目的地まで、歩ける床がつながっていません。"
+                             "家具の上など床でない所に置いていないか、途中の扉が閉まった"
+                             "まま撮っていないか、途中の床が撮れているかを確かめてください")
         path = [g_node]
         while path[-1] != s_node:
             path.append(int(pred[path[-1]]))
