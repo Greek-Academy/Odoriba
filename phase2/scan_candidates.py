@@ -270,7 +270,7 @@ def _rank(row):
 
 
 def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=print,
-                     carried_by=None):
+                     carried_by=None, on_row=None):
     """候補 [(名前, 幅, 奥行, 高さ) or (名前, 幅, 奥行, 高さ, 重さkg), ...] を1件ずつ判定する。
 
     space は中心線を作り終えた ScanSpace。戻り値は候補ごとの dict のリスト
@@ -280,7 +280,8 @@ def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=prin
     重さがある候補は、下側の人の負担が1人の上限を超えない傾きまでで判定する
     (重さが無い候補は固定の傾き上限)。carried_by は誰が運ぶか
     (phase2_lstair.CARRIER_PRESETS の名前。既定は CARRIER_PRESET)で、
-    1人の上限を決める。
+    1人の上限を決める。on_row を渡すと、1件終わるごとにその結果の dict で
+    呼ぶ(画面に進み具合を出すため)。
     """
     carried_by = carried_by or L.CARRIER_PRESET
     rows = []
@@ -311,6 +312,8 @@ def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=prin
             row.update(weight_kg=weight, carried_by=carried_by)
         rows.append(row)
         log(format_row(row))
+        if on_row:
+            on_row(row)
     return rows
 
 

@@ -370,3 +370,18 @@ def test_size_error_rejects_sizes_that_are_not_positive_numbers(item):
 def test_size_error_accepts_a_normal_candidate():
     assert sc.size_error(("棚", 90.0, 40.0, 180.0)) is None
     assert sc.size_error(("棚", 90.0, 40.0, 180.0, 30.0)) is None
+
+
+def test_judge_candidates_reports_each_row_as_it_finishes(monkeypatch):
+    def fake_judge(space, **kwargs):
+        if L.FURN_L >= 300.0:
+            raise ValueError("経路が短すぎて掃引できない")
+        return _result(12.0)
+
+    monkeypatch.setattr(sp, "judge", fake_judge)
+    seen = []
+    rows = sc.judge_candidates(_Space(), [("長すぎ", 300.0, 50.0, 50.0),
+                                          ("小", 60.0, 40.0, 40.0)],
+                               log=lambda *_: None, on_row=seen.append)
+    assert seen == rows
+    assert [r["name"] for r in seen] == ["長すぎ", "小"]
