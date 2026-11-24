@@ -12,9 +12,9 @@ import scan_plan as sp
 
 
 class _Centerline:
-    """+x 方向へまっすぐ 600cm 進む、平らな中心線。"""
+    """+x 方向へまっすぐ 320cm 進む、平らな中心線(掃引は7か所で済む)。"""
 
-    s_total = 600.0
+    s_total = 320.0
     corners = []
 
     def xy_at(self, s):
@@ -77,3 +77,57 @@ def test_too_heavy_to_hold_flat_is_reported_as_weight(box):
 def test_weight_that_can_be_held_flat_is_not_an_error(box):
     box.setattr(L, "FURN_WEIGHT_KG", 60.0)   # 水平なら1人30kg
     assert _judge()["bottleneck"]["capacity_cm"] > 0
+
+
+# ---- 傾きごとの掃引結果(tilt_detail) ----
+
+class _LowDoorway(_OpenSpace):
+    """s=160cm 付近に、高さ40cmまでしか通れない低い所がある空間。
+
+    高さ60cmの箱はどう傾けても当たる。余裕が傾きごとに変わる例として使う。
+    """
+
+    def clearance_points(self, pts):
+        pts = np.asarray(pts)
+        near = np.abs(pts[:, 0] - 160.0) < 20.0
+        return np.where(near, 40.0 - pts[:, 2], 100.0)
+
+
+def _detail(space):
+    return sp.judge(space, num_carriers=2, rrt=False, tilt_detail=True,
+                    log=lambda *_: None)
+
+
+@pytest.mark.parametrize("weight", [None, 70.0])
+@pytest.mark.parametrize("space_cls", [_OpenSpace, _LowDoorway])
+def test_tilt_detail_gives_the_same_bottleneck_as_the_plain_sweep(box, weight, space_cls):
+    box.setattr(L, "FURN_WEIGHT_KG", weight)
+    plain = sp.judge(space_cls(), num_carriers=2, rrt=False, log=lambda *_: None)
+    detail = _detail(space_cls())
+    for key in ("s", "capacity_cm", "pose", "profile", "no_pose_s", "limit", "contact"):
+        assert detail["bottleneck"][key] == plain["bottleneck"][key], key
+    assert detail["bottleneck_furniture_only"] == plain["bottleneck_furniture_only"]
+
+
+def test_tilt_detail_lists_each_tilt_limit_in_order(box):
+    by_tilt = _detail(_OpenSpace())["bottleneck_by_tilt"]
+    assert [e["max_tilt_deg"] for e in by_tilt] == list(sp.SWEEP_PITCHES)
+    # 傾きの上限を広げると試せる姿勢が増えるので、余裕は減らない
+    caps = [e["capacity_cm"] for e in by_tilt]
+    assert caps == sorted(caps)
+
+
+def test_tilt_detail_adds_the_weight_limited_tilt_to_the_list(box):
+    box.setattr(L, "FURN_WEIGHT_KG", 70.0)
+    cap = L.max_tilt_deg(2)
+    assert 0.0 < cap < 90.0 and cap not in sp.SWEEP_PITCHES
+    result = _detail(_OpenSpace())
+    assert result["bottleneck"]["max_tilt_deg"] == cap
+    assert cap in [e["max_tilt_deg"] for e in result["bottleneck_by_tilt"]]
+
+
+def test_tilt_detail_restores_the_weight_and_tilt_limit(box):
+    box.setattr(L, "FURN_WEIGHT_KG", 70.0)
+    before = (L.FURN_WEIGHT_KG, L.MAX_TILT_DEG)
+    _detail(_LowDoorway())
+    assert (L.FURN_WEIGHT_KG, L.MAX_TILT_DEG) == before
