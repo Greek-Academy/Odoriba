@@ -64,6 +64,7 @@ FLOOR_BAND = 30.0     # 階の床の高さから上下この幅(cm)の上向き�
 STAIR_SPAN = 60.0     # 階の間のかたまりで、高さの幅がこれ以上(段が3つほど続く)なら階段
 WALL_LO, WALL_HI = 30.0, 200.0   # 床からこの高さの範囲にある縦向きの面を壁の候補にする
 WALL_MIN_SPAN = 60.0  # 1マスの中で縦にこれ以上続いていれば壁(段の蹴込みや低い家具は外す)
+STAIR_MIN_CELLS = 20  # これより少ないマスのかたまりは階段にしない(スキャンの荒れの破片)
 STAIR_TOUCH = 3       # 階段を出すのは、その階の床からこのマス数以内につながるものだけ
 BLOCK_BELOW = 150.0   # 床の上にこの高さ(cm)未満の上向きの面(机など)があれば、そこには置けない
 DENSITY = 0.3         # 面の上に撒く点の数(1cm²あたり)
@@ -111,7 +112,9 @@ def _stairs_between(grid, pts):
 
     上から見てつながったかたまりごとに高さの幅を見る。段が続いていれば幅が
     大きく、机やベッドの上面は小さい。踊り場は段とつながっているので階段に
-    入る。(階段のかたまりのリスト, それ以外のマス, マスの高さ) を返す。
+    入る。高さの幅が大きくても、ごく小さいかたまり(スキャンの荒れで出る
+    破片)は階段にしない。(階段のかたまりのリスト, それ以外のマス, マスの高さ)
+    を返す。
     """
     from scipy import ndimage
 
@@ -124,7 +127,9 @@ def _stairs_between(grid, pts):
         where = np.where(has, labels, 0)
         lo = ndimage.minimum(zmin, where, ids)
         hi = ndimage.maximum(zmax, where, ids)
-        stairs = [where == i for i in ids[(hi - lo) >= STAIR_SPAN]]
+        size = ndimage.sum(has, where, ids)
+        tall = ids[((hi - lo) >= STAIR_SPAN) & (size >= STAIR_MIN_CELLS)]
+        stairs = [where == i for i in tall]
     other = has.copy()
     for comp in stairs:
         other &= ~comp

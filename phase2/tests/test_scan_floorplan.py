@@ -183,3 +183,12 @@ def test_plans_do_not_take_a_face_far_below_the_floor_as_a_floor():
     plans = fp.plans_from_points(up, np.zeros((0, 3)), [200.0], [[0, 0], [400, 100]])
     kind, z = _at(plans, 0, 350, 50)
     assert kind == fp.OTHER and np.isnan(z)
+
+
+def test_plans_do_not_take_a_tiny_tall_fragment_as_stairs():
+    # 15cm四方(9マス)に、高さの違う面が重なった破片。高さの幅は大きいが階段ではない
+    scrap = np.vstack([_patch(250, 265, 40, 55, 60), _patch(250, 265, 40, 55, 200)])
+    up = np.vstack([_patch(0, 200, 0, 100, 0), _patch(300, 400, 0, 100, 270), scrap])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0, 270.0], [[0, 0], [400, 100]])
+    kind, z = _at(plans, 0, 257, 47)
+    assert kind == fp.OTHER and np.isnan(z)
