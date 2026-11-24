@@ -19,7 +19,7 @@ def _quad(corners, facing):
     return c, faces
 
 
-def _two_storey_without_lower_ceiling():
+def _two_storey_without_lower_ceiling(second_layer=None):
     """吹き抜けでつながった2階建て。面は撮った人の側(空間の側)を向く。
 
     1階の床 z=0、2階の床 z=251 は y<120 の範囲だけの1枚の面で、その裏
@@ -27,6 +27,8 @@ def _two_storey_without_lower_ceiling():
     2階の床の高さは格子(2cm刻み)から外してある。実物のスキャンと同じく、
     面を含むボクセルの中心が面の上にずれ、そのボクセルが自由空間になる
     (格子ちょうどの高さだと、面のボクセルが壁扱いになって不具合が出ない)。
+    second_layer を渡すと、2階の床のその高さだけ上に、同じ面をもう1枚重ねる
+    (撮影中の位置ずれで床が二重に撮れた形)。
     """
     W, D, H, Z2, Y2 = 200.0, 200.0, 500.0, 251.0, 120.0
     quads = [
@@ -38,6 +40,9 @@ def _two_storey_without_lower_ceiling():
         ([(W, 0, 0), (W, D, 0), (W, D, H), (W, 0, H)], (-1, 0, 0)),
         ([(0, 0, Z2), (W, 0, Z2), (W, Y2, Z2), (0, Y2, Z2)], (0, 0, 1)),  # 2階の床(1枚)
     ]
+    if second_layer is not None:
+        z = Z2 + second_layer
+        quads.append(([(0, 0, z), (W, 0, z), (W, Y2, z), (0, Y2, z)], (0, 0, 1)))
     verts, faces = [], []
     for corners, facing in quads:
         v, f = _quad(corners, np.array(facing, dtype=float))
@@ -64,3 +69,13 @@ def test_lower_floor_is_still_found_under_the_upper_floor(space):
 def test_the_void_has_no_upper_floor(space):
     # 吹き抜けには2階の床が無い(高い所から見ても、返るのは1階の床)
     assert space.floor_fn(100.0, 170.0, z_hint=350.0) == pytest.approx(0.0, abs=3.0)
+
+
+def test_a_floor_scanned_as_two_layers_is_registered_once():
+    # 床が4.5cmずれて二重に撮れていても、同じ列に床を2つ登録しない
+    # (頭上の余裕を上向きの面で止めないと、層の間も床になる)
+    sp = ss.ScanSpace(_two_storey_without_lower_ceiling(second_layer=4.5),
+                      (100.0, 160.0, 100.0))
+    upper = [[z for z in zs if z > 200.0] for zs in sp.floors.values()]
+    assert max(len(zs) for zs in upper) == 1
+    assert sp.floor_fn(100.0, 60.0, z_hint=350.0) == pytest.approx(255.5, abs=3.0)
