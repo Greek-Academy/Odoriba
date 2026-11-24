@@ -11,7 +11,9 @@
 置く」を選んで床をクリックし、候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を
 1行に1件ずつ書いて「判定する」を押すと、裏で掃引(1件あたり十数秒〜1分)を
 回して、候補ごとの ○/△/× と理由を表で出す(scan_candidates と同じ判定)。
-階段のように床が上下に重なる所は、表示する高さの範囲を絞ってから置く。
+表の「3Dで見る」を押すと、その候補が一番狭い所でどう詰まるかを3D
+(scan_viewer)で表示する。階段のように床が上下に重なる所は、表示する高さの
+範囲を絞ってから置く。
 
 計算は時間がかかるので、要求を受けたらすぐ返し(ジョブ番号)、ブラウザが
 進み具合を問い合わせる形にしている(同期APIにしない、という方針どおり)。
@@ -35,7 +37,9 @@ import trimesh
 
 import phase2_lstair as L
 import scan_candidates as SC
+import scan_plan as SP
 import scan_space as SS
+import scan_viewer as SV
 
 PORT = 8001
 PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
@@ -67,9 +71,14 @@ def read_candidates(text):
     return items, None
 
 
+def can_view(row):
+    """3Dで見せられる候補か(掃引していない候補は、見せる姿勢が無い)。"""
+    return row["verdict"] != "unknown" and not row.get("too_heavy_flat")
+
+
 def shown_row(row):
     """1件の結果を、画面の表に出す形にする(文言は scan_candidates のもの)。"""
-    return dict(SC.row_parts(row), verdict=row["verdict"])
+    return dict(SC.row_parts(row), verdict=row["verdict"], can_view=can_view(row))
 
 
 class App:
@@ -87,6 +96,8 @@ class App:
         self.fixed_seed = seed
         self.items_text = items_text
         self.space = None
+        self.route = None     # いまの中心線の (出発点, 目的地)
+        self.results = {}     # 判定ジョブ -> 3Dを作り直すのに要る値
         self.floor = self._floor_points()
         self.jobs = {}
         self.lock = threading.Lock()   # 中心線は ScanSpace に1つなので判定は1件ずつ
@@ -116,7 +127,18 @@ class App:
         self.jobs[job]["message"] = "空間を作っています(約1分)..."
         seed = self.fixed_seed or SS.seed_near(self.mesh, start)
         self.space = SS.ScanSpace(self.mesh, seed)
+        self.route = None
         return self.space
+
+    def _ensure_route(self, job, start, goal):
+        """出発点・目的地の中心線を持つ空間を返す(同じ経路なら作り直さない)。"""
+        space = self._ensure_space(job, start)
+        key = (tuple(start), tuple(goal))
+        if self.route != key:
+            self.jobs[job] = {"state": "running", "message": "経路を作っています..."}
+            space.build_centerline(start, goal)
+            self.route = key
+        return space
 
     def submit(self, start, goal, items, carried_by):
         job = uuid.uuid4().hex[:8]
@@ -130,9 +152,7 @@ class App:
             # 候補ごとに家具の寸法(phase2_lstair の変数)を差し替えて判定するので、
             # 必ず lock の中で1件ずつ動かす(並行に動かすと寸法が混ざる)
             with self.lock:
-                space = self._ensure_space(job, start)
-                self.jobs[job] = {"state": "running", "message": "経路を作っています..."}
-                space.build_centerline(start, goal)
+                space = self._ensure_route(job, start, goal)
                 shown = []
 
                 def progress():
@@ -147,12 +167,49 @@ class App:
                     progress()
 
                 progress()
-                SC.judge_candidates(space, items, num_carriers=self.num_carriers,
-                                    carried_by=carried_by, log=lambda *_: None,
-                                    on_row=on_row)
+                rows = SC.judge_candidates(space, items, num_carriers=self.num_carriers,
+                                           carried_by=carried_by, log=lambda *_: None,
+                                           on_row=on_row)
                 length, leaked = space.centerline.s_total, space.leaked
+            self.results[job] = {"rows": rows, "start": start, "goal": goal,
+                                 "carried_by": carried_by}
             self.jobs[job] = {"state": "done", "rows": shown, "length": length,
                               "leaked": leaked}
+        except Exception as e:
+            traceback.print_exc()
+            self.jobs[job] = {"state": "error", "message": str(e)}
+
+    def submit_view(self, judged_job, index):
+        """判定済みの候補1件の3Dを作るジョブを始める。(ジョブ番号, エラー文) を返す。"""
+        res = self.results.get(judged_job)
+        if res is None or not isinstance(index, int) or not 0 <= index < len(res["rows"]):
+            return None, "その候補は見つかりません(もう一度判定してください)"
+        if not can_view(res["rows"][index]):
+            return None, "この候補は3Dで見せられません"
+        job = uuid.uuid4().hex[:8]
+        self.jobs[job] = {"state": "running", "message": "順番を待っています..."}
+        threading.Thread(target=self._run_view, args=(job, res, res["rows"][index]),
+                         daemon=True).start()
+        return job, None
+
+    def _run_view(self, job, res, row):
+        try:
+            a, b, up = row["carried_as"]
+            with self.lock:
+                space = self._ensure_route(job, res["start"], res["goal"])
+                self.jobs[job] = {"state": "running",
+                                  "message": "3Dを作っています(十数秒〜1分)..."}
+                out = OUT_DIR / f"{job}.html"
+                # 表と同じ向き・同じ重さで判定し直す(一括判定は姿勢を残していない)
+                with SC.furniture_dims(a, b, up), \
+                        SC.carried_weight(row.get("weight_kg"), res["carried_by"]):
+                    result = SP.judge(space, num_carriers=self.num_carriers, rrt=False,
+                                      log=lambda *_: None)
+                    SV.render_html(space, self.mesh, result, str(out),
+                                   num_carriers=self.num_carriers,
+                                   include_plotlyjs="/plotly.min.js",
+                                   title=f"{row['name']} {SC.row_parts(row)['size']}")
+            self.jobs[job] = {"state": "done", "url": f"/result/{job}.html"}
         except Exception as e:
             traceback.print_exc()
             self.jobs[job] = {"state": "error", "message": str(e)}
@@ -202,8 +259,9 @@ PAGE = """<!doctype html>
 </div>
 <div id="status"></div>
 <table id="rows"></table>
-<div class="note" id="notes"></div>
+<div id="viewStatus" class="row"></div>
 <iframe id="result"></iframe>
+<div class="note" id="notes"></div>
 <script>
 let F = null, mode = 'start', pts = {start: null, goal: null};
 function setMode(m) {
@@ -247,26 +305,55 @@ function el(tag, text, cls) {
   if (cls) e.className = cls;
   return e;
 }
-function showRows(rows) {
+let judged = null, busy = false;
+function showRows(rows, done) {
   const t = document.getElementById('rows');
   t.replaceChildren();
   if (!rows || !rows.length) return;
   const head = el('tr');
-  for (const h of ['', '候補', '大きさ', '結果', '補足']) head.appendChild(el('th', h));
+  for (const h of ['', '候補', '大きさ', '結果', '補足', '']) head.appendChild(el('th', h));
   t.appendChild(head);
-  for (const r of rows) {
+  rows.forEach((r, i) => {
     const tr = el('tr', undefined, r.verdict);
     tr.appendChild(el('td', r.mark, 'mark'));
     tr.appendChild(el('td', r.name));
     tr.appendChild(el('td', r.size));
     tr.appendChild(el('td', r.reason));
     tr.appendChild(el('td', r.extras.join(' / ')));
+    const td = el('td');
+    if (done && r.can_view) {
+      const b = el('button', '3Dで見る');
+      b.onclick = () => view(i, r.name);
+      td.appendChild(b);
+    }
+    tr.appendChild(td);
     t.appendChild(tr);
-  }
+  });
 }
+async function view(i, name) {
+  if (busy) { viewStatus('計算中です。終わってから押してください'); return; }
+  busy = true;
+  const fr = document.getElementById('result');
+  fr.style.display = 'none';
+  const r = await (await fetch('/view', {method: 'POST', body: JSON.stringify({job: judged, index: i})})).json();
+  if (r.error) { busy = false; viewStatus(r.error); return; }
+  const t0 = Date.now();
+  const poll = async () => {
+    const s = await (await fetch('/status?job=' + r.job)).json();
+    if (s.state === 'running') { viewStatus(name + ': ' + s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
+    busy = false;
+    if (s.state === 'error') { viewStatus(name + ': 3Dを作れませんでした: ' + s.message); return; }
+    viewStatus(name + ': 一番狭い所での様子(左=家具だけ、右=人が運ぶ)');
+    fr.src = s.url; fr.style.display = 'block';
+  };
+  poll();
+}
+function viewStatus(t) { document.getElementById('viewStatus').textContent = t; }
 async function judge() {
   if (!pts.start || !pts.goal) { status('出発点と目的地の両方を置いてください'); return; }
+  if (busy) { status('計算中です。終わってから押してください'); return; }
   status('計算中...');
+  viewStatus('');
   showRows([]);
   document.getElementById('notes').style.display = 'none';
   document.getElementById('result').style.display = 'none';
@@ -274,12 +361,15 @@ async function judge() {
     carried_by: document.getElementById('by').value};
   const r = await (await fetch('/judge', {method: 'POST', body: JSON.stringify(body)})).json();
   if (r.error) { status(r.error); return; }
+  busy = true;
   const t0 = Date.now();
   const poll = async () => {
     const s = await (await fetch('/status?job=' + r.job)).json();
-    showRows(s.rows);
+    showRows(s.rows, s.state === 'done');
     if (s.state === 'running') { status(s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
+    busy = false;
     if (s.state === 'error') { status('判定できませんでした: ' + s.message); return; }
+    judged = r.job;
     status('経路 ' + Math.round(s.length) + 'cm を ' + F.carriers + '人で運ぶ場合' +
       (s.leaked ? ' (注意: 撮れていない壁から空間が漏れている。判定は信用できない)' : ''));
     document.getElementById('notes').style.display = 'block';
@@ -345,10 +435,15 @@ def make_handler(app):
                 self.send_error(404)
 
         def do_POST(self):
-            if urlparse(self.path).path != "/judge":
+            path = urlparse(self.path).path
+            if path not in ("/judge", "/view"):
                 self.send_error(404)
                 return
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if path == "/view":
+                job, error = app.submit_view(body.get("job"), body.get("index"))
+                self._json({"error": error} if error else {"job": job})
+                return
             items, error = read_candidates(str(body.get("items", "")))
             carried_by = body.get("carried_by") or L.CARRIER_PRESET
             if error is None and carried_by not in L.CARRIER_PRESETS:
