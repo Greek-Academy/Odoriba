@@ -418,6 +418,10 @@ fetch('/floor').then(r => r.json()).then(d => {
   F = d;
   document.getElementById('info').textContent = '運ぶ人 ' + d.carriers + '人' +
     ' / スキャンから作った間取り図。床か階段をクリックして置く(ドラッグで動かす、ホイールで拡大)';
+  if (!d.plans.floors.length) {
+    document.getElementById('info').textContent = 'このスキャンから床が見つかりませんでした。床が写るように撮り直してください';
+    return;
+  }
   const tabs = document.getElementById('tabs');
   if (d.plans.floors.length > 1) d.plans.floors.forEach((f, i) => {
     const b = el('button', f.name);
