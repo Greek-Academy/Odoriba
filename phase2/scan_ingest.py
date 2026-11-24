@@ -94,7 +94,10 @@ def load_scan_zup(path, assume_units=None):
     2026-11-17 までは-90度で回しており、上下が逆になっていた(天井が床として
     扱われ、階段の踏み面が下向きになって見つからなかった)。
     戻り値: (mesh_cm_zup, info)。info["upward_share"] が0.4未満なら、
-    上下が逆の疑いがあるので警告を出す。
+    上下が逆の疑いがあるので警告を出す。info["to_zup"] は、元のファイルの
+    座標をこの関数の戻り値の座標に直す 4x4 の行列(行のリスト)。元のファイルを
+    そのまま表示する画面(scan_picker の立体表示)で選んだ点を、判定側の座標に
+    直すのに使う。
     """
     m = load_mesh(path)
     scale, unit_label = guess_units_scale(m, assume_units)
@@ -103,13 +106,16 @@ def load_scan_zup(path, assume_units=None):
     R = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
     m.apply_transform(R)
     # 原点を最小コーナーに揃える(座標を正の領域に置く)
-    m.apply_translation(-m.bounds[0])
+    shift = -m.bounds[0]
+    m.apply_translation(shift)
+    to_zup = trimesh.transformations.translation_matrix(shift) @ R @ np.diag(
+        [scale, scale, scale, 1.0])
     share = upward_share(m)
     if share < 0.4:
         import warnings
         warnings.warn(f"上向きの水平面が{share:.0%}しかない。スキャンの上下が逆の疑いがある: {path}")
     info = {"unit_label": unit_label, "extents_cm": [float(e) for e in m.extents],
-            "upward_share": share}
+            "upward_share": share, "to_zup": to_zup.tolist()}
     return m, info
 
 

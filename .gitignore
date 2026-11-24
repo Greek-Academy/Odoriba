@@ -13,3 +13,9 @@ demo/
 .pytest_cache/
 # 業者とのやりとりは公開リポジトリに置かない(CLAUDE.md 参照)
 docs/interview-*
+phase2/vendor/
+# スキャンのファイルには撮った場所の緯度・経度が入っている。リポジトリに入れない
+phase2/*.zip
+phase2/*.mtl
+phase2/*.jpg
+phase2/*.ply
