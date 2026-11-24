@@ -191,19 +191,17 @@ def tilt_limit(max_tilt_deg):
         L.FURN_WEIGHT_KG, L.MAX_TILT_DEG = orig
 
 
-def tilt_sweep(space, num_carriers=None, ds=15.0, extra_pitches=()):
+def tilt_sweep(space, num_carriers=None, ds=15.0):
     """傾きの上限を外して掃引し、向きごとの最良の余裕を残す。
 
     [(s, [(quat, 余裕cm, 姿勢 or None), ...]), ...] を返す。傾きの上限は
     「その向きを許すか」だけを決め、許された向きの余裕は変えない。だから
     1回掃引しておけば、上限を変えたときの結果を limit_sweep で何通りでも
     取り直せる(上限ごとに掃引を回し直さずに済む)。
-    extra_pitches は、格子に無い傾き(重さで決まる上限そのもの)を足すのに使う。
     """
-    pitches = sorted(set(SWEEP_PITCHES) | {float(t) for t in extra_pitches})
     out = []
     with tilt_limit(90.0):
-        for s, groups in _sweep_poses(space, pitches, ds):
+        for s, groups in _sweep_poses(space, SWEEP_PITCHES, ds):
             rows = []
             for quat, positions in groups:
                 best, best_pos = -np.inf, None
@@ -354,10 +352,16 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
     戻り値は phase2_lstair の結果JSONと同じ形の dict。
 
     tilt_detail が真なら、運搬者ありの掃引を傾きの上限なしで1回だけ回し、
-    今の設定での結果("bottleneck"、tilt_detail が偽のときと同じ値)に加えて、
+    今の設定での結果("bottleneck")に加えて、
     傾きの上限を変えたときの結果を "bottleneck_by_tilt" に入れる
     ([{"max_tilt_deg": 上限, ...bottleneck と同じ項目}, ...]、上限の小さい順)。
     「何度まで傾ければ通るか」から重さの上限を出すのに使う。
+
+    tilt_detail では、重さがあっても試す傾きを SWEEP_PITCHES から変えない
+    (tilt_detail が偽のときは、重さで決まる上限そのものの傾きも足す)。
+    試す姿勢が重さによらず同じなので、重い方が良い結果になることが無く、
+    重さの違う候補どうしを比べられる。重さなしなら偽のときと同じ値、
+    重さありなら同じか少し厳しい値になる。
     """
     cl = space.centerline
     if end_margin is None:
@@ -401,15 +405,14 @@ def judge(space, num_carriers=2, max_iter=4000, seed=0, end_margin=None, sweep=T
                 return not L.with_tilt_violation(quat, num_carriers)
 
             cap = L.max_tilt_deg(num_carriers)
-            extra = () if L.FURN_WEIGHT_KG is None else (cap,)
-            ts = tilt_sweep(space, num_carriers, extra_pitches=extra)
+            ts = tilt_sweep(space, num_carriers)
             # 今の設定(重さがあれば下側の人の負担、無ければ固定の上限)での結果
             result["bottleneck"] = _bottleneck(space, limit_sweep(ts, allowed), True,
                                                num_carriers, "bottleneck", log)
             result["bottleneck"]["max_tilt_deg"] = float(cap)
             # 傾きの上限を変えたらどうなるか(重さは外して、上限だけで見る)
             result["bottleneck_by_tilt"] = []
-            for t in sorted(set(SWEEP_PITCHES) | set(extra)):
+            for t in SWEEP_PITCHES:
                 with tilt_limit(t):
                     try:
                         bh = _bottleneck(space, limit_sweep(ts, allowed), True,

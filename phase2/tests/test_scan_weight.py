@@ -98,10 +98,8 @@ def _detail(space):
                     log=lambda *_: None)
 
 
-@pytest.mark.parametrize("weight", [None, 70.0])
 @pytest.mark.parametrize("space_cls", [_OpenSpace, _LowDoorway])
-def test_tilt_detail_gives_the_same_bottleneck_as_the_plain_sweep(box, weight, space_cls):
-    box.setattr(L, "FURN_WEIGHT_KG", weight)
+def test_tilt_detail_gives_the_same_bottleneck_as_the_plain_sweep(box, space_cls):
     plain = sp.judge(space_cls(), num_carriers=2, rrt=False, log=lambda *_: None)
     detail = _detail(space_cls())
     for key in ("s", "capacity_cm", "pose", "profile", "no_pose_s", "limit", "contact"):
@@ -117,13 +115,27 @@ def test_tilt_detail_lists_each_tilt_limit_in_order(box):
     assert caps == sorted(caps)
 
 
-def test_tilt_detail_adds_the_weight_limited_tilt_to_the_list(box):
-    box.setattr(L, "FURN_WEIGHT_KG", 70.0)
+def test_tilt_detail_tries_the_same_poses_whatever_the_weight(box):
+    # 60kgなら約29度まで傾けられる。試す傾きは格子のまま(0度と15度)なので、
+    # 結果は「上限15度・重さなし」と同じになる。重さごとに試す傾きを足すと、
+    # 重い方が重さ不明より良く出ることがある
+    box.setattr(L, "FURN_WEIGHT_KG", 60.0)
     cap = L.max_tilt_deg(2)
-    assert 0.0 < cap < 90.0 and cap not in sp.SWEEP_PITCHES
-    result = _detail(_OpenSpace())
+    assert 15.0 < cap < 30.0
+    result = _detail(_LowDoorway())
     assert result["bottleneck"]["max_tilt_deg"] == cap
-    assert cap in [e["max_tilt_deg"] for e in result["bottleneck_by_tilt"]]
+    by_tilt = {e["max_tilt_deg"]: e for e in result["bottleneck_by_tilt"]}
+    assert list(by_tilt) == list(sp.SWEEP_PITCHES)
+    assert result["bottleneck"]["profile"] == by_tilt[15.0]["profile"]
+
+
+def test_heavier_never_has_more_room(box, space_cls=_LowDoorway):
+    worst = []
+    for weight in (None, 30.0, 60.0, 79.0):
+        box.setattr(L, "FURN_WEIGHT_KG", weight)
+        worst.append(_detail(space_cls())["bottleneck"]["capacity_cm"])
+    # 重さなし(上限55度)より、30kg(垂直まで傾けられる)の方が余裕があってよい
+    assert worst[1:] == sorted(worst[1:], reverse=True)
 
 
 def test_tilt_detail_restores_the_weight_and_tilt_limit(box):
