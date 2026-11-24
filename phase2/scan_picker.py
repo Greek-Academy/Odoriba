@@ -7,10 +7,13 @@
     python scan_picker.py --route                    # 検証用の合成経路(route_env)で
     python scan_picker.py <scan.obj> --furniture 180 60 40 --carriers 2
 
-ブラウザに階ごとの間取り図(壁・床・階段。scan_floorplan が作る)が出る。
-「出発点を置く」「目的地を置く」を選んで床か階段をクリックし(階が2つ以上
-あればタブで切り替える)、候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を
-1行に1件ずつ書いて「判定する」を押すと、裏で掃引(1件あたり十数秒〜1分)を
+初回だけ、立体表示の部品を取ってくる: python fetch_viewer.py
+
+ブラウザに、スキャンがそのまま立体で出る(写真つき。Babylon.js)。ドラッグで
+回し、「出発点を置く」「目的地を置く」を選んで床をクリックするとピンが立つ。
+以前は床の点を高さで色分けした図や、階ごとの間取り図に描き直していたが、
+実際の家と見比べる手がかりが無く、使えなかった(decisions.md 2026-11-24)。
+候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を1行に1件ずつ書いて「判定する」を押すと、裏で掃引(1件あたり十数秒〜1分)を
 回して、候補ごとの ○/△/× と理由を表で出す(scan_candidates と同じ判定)。
 表の「3Dで見る」を押すと、その候補が一番狭い所でどう詰まるかを3D
 (scan_viewer)で表示する。
@@ -22,6 +25,7 @@
 
 import argparse
 import json
+import shutil
 import tempfile
 import threading
 import traceback
@@ -29,14 +33,14 @@ import uuid
 import webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote, unquote
 
 import numpy as np
 import plotly
 
+import fetch_viewer
 import phase2_lstair as L
 import scan_candidates as SC
-import scan_floorplan as FP
 import scan_plan as SP
 import scan_space as SS
 import scan_viewer as SV
@@ -44,6 +48,53 @@ import scan_viewer as SV
 PORT = 8001
 PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
 OUT_DIR = Path(tempfile.mkdtemp(prefix="odoriba_picker_"))
+
+# 立体表示に渡すファイルの種類(スキャンの形・材質・写真)
+VIEW_TYPES = {".obj": "text/plain", ".mtl": "text/plain", ".jpg": "image/jpeg",
+              ".jpeg": "image/jpeg", ".png": "image/png"}
+VENDOR_TYPES = {".js": "application/javascript"}
+
+
+def view_of_scan(path, to_zup):
+    """スキャンの元ファイルを、立体表示に渡せる形にする。
+
+    戻り値は {"dir": 配るフォルダ, "file": OBJの名前, "to_zup": 行列}。zip なら
+    中の OBJ・MTL・写真を一時フォルダに出す。OBJ を直接渡されたときは、同じ
+    フォルダの MTL・写真をそのまま配る。to_zup は、元のファイルの座標を判定側の
+    座標(上がZ・cm)に直す行列(scan_ingest.load_scan_zup の info["to_zup"])。
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".zip":
+        import zipfile
+        out = Path(tempfile.mkdtemp(prefix="odoriba_scan_"))
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if Path(name).suffix.lower() in VIEW_TYPES:
+                    with z.open(name) as src, open(out / Path(name).name, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        objs = sorted(f.name for f in out.iterdir() if f.suffix.lower() == ".obj")
+        if not objs:
+            raise ValueError(f"zipの中にOBJがない(立体表示はOBJだけ対応): {path}")
+        return {"dir": out, "file": objs[0], "to_zup": to_zup}
+    if path.suffix.lower() != ".obj":
+        raise ValueError(f"立体表示はOBJ(またはそのzip)だけ対応: {path}")
+    return {"dir": path.resolve().parent, "file": path.name, "to_zup": to_zup}
+
+
+def view_of_mesh(mesh):
+    """判定側の座標(上がZ・cm)のメッシュを、立体表示に渡せる形にする。
+
+    写真の無い合成経路用。立体表示は上がYなので、X軸まわりに-90度回して
+    書き出し、行列で元に戻す。
+    """
+    import trimesh
+    back = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+    m = mesh.copy()
+    m.apply_transform(np.linalg.inv(back))
+    out = Path(tempfile.mkdtemp(prefix="odoriba_scan_"))
+    m.export(out / "route.obj", include_normals=True)
+    return {"dir": out, "file": "route.obj", "to_zup": back.tolist()}
+
 
 # 1件ずつ掃引するので、候補が多いと待ち時間が長くなる
 MAX_ITEMS = 12
@@ -93,14 +144,15 @@ def shown_row(row):
 class App:
     """読み込んだスキャンと、判定ジョブの状態を持つ。
 
-    間取り図は撮れた面すべてから作り(scan_floorplan)、空間(ScanSpace)は判定の
-    ときに出発点の上を起点にして作る。起点を自動で選ぶと、つながっていない
+    画面にはスキャンの元ファイルをそのまま立体で出し(view)、空間(ScanSpace)は
+    判定のときに出発点の上を起点にして作る。起点を自動で選ぶと、つながっていない
     小さな部屋に入って、そこにしか置けなくなることがあるため。一度作った
     空間は、次の出発点がその中にあれば使い回す(作るのに約1分かかる)。
     """
 
-    def __init__(self, mesh, num_carriers, seed=None, items_text=DEFAULT_ITEMS):
+    def __init__(self, mesh, view, num_carriers, seed=None, items_text=DEFAULT_ITEMS):
         self.mesh = mesh
+        self.view = view      # 立体表示に渡すファイルと行列(view_of_scan / view_of_mesh)
         self.num_carriers = num_carriers
         self.fixed_seed = seed
         self.items_text = items_text
@@ -110,14 +162,12 @@ class App:
         self.space = None
         self.route = None     # いまの中心線の (出発点, 目的地)
         self.results = {}     # 判定ジョブ -> 3Dを作り直すのに要る値
-        self.plans = FP.to_json(FP.build_plans(mesh))
         self.jobs = {}
         self.lock = threading.Lock()   # 中心線は ScanSpace に1つなので判定は1件ずつ
 
     def floor_json(self):
-        return {"plans": self.plans,
-                "kinds": {"nothing": FP.NOTHING, "floor": FP.FLOOR, "stair": FP.STAIR,
-                          "other": FP.OTHER, "wall": FP.WALL},
+        return {"scan": "/scan/" + quote(self.view["file"]),
+                "to_zup": self.view["to_zup"],
                 "carriers": self.num_carriers, "items": self.items_text,
                 "presets": [{"key": k, "label": f"{SC.PRESET_TEXT[k]}(1人{kg:.0f}kgまで)"}
                             for k, kg in L.CARRIER_PRESETS.items()],
@@ -223,7 +273,8 @@ class App:
 
 PAGE = """<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><title>Odoriba: 出発点と目的地を置く</title>
-<script src="/plotly.min.js"></script>
+<script src="/vendor/babylon.js"></script>
+<script src="/vendor/babylonjs.loaders.min.js"></script>
 <style>
  body { font-family: sans-serif; margin: 16px; color: #333; }
  button { font-size: 15px; padding: 6px 14px; margin-right: 6px; }
@@ -241,24 +292,20 @@ PAGE = """<!doctype html>
  tr.ok td.mark { color: #27ae60; } tr.close td.mark { color: #d68910; }
  tr.ng td.mark { color: #c0392b; } tr.unknown td.mark { color: #888; }
  #notes { display: none; }
- #tabs button.on { background: #555; color: white; }
- .key { display: inline-block; width: 14px; height: 14px; border: 1px solid #999;
-        vertical-align: middle; margin: 0 4px 0 12px; }
+ #view { width: 100%; height: 600px; border: 1px solid #ccc; outline: none; touch-action: none; display: block; }
+ #cut { width: 320px; vertical-align: middle; }
+ .pin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
 </style></head><body>
-<h2>1. 出発点と目的地を床に置く</h2>
+<h2>1. 出発点と目的地のピンを床に立てる</h2>
 <div class="row">
  <button id="mStart" class="on" onclick="setMode('start')">● 出発点を置く</button>
  <button id="mGoal" onclick="setMode('goal')">■ 目的地を置く</button>
 </div>
-<div class="row" id="tabs"></div>
 <div class="note" id="info"></div>
-<div id="plan" style="width:100%;height:560px"></div>
-<div class="note">
- <span class="key" style="background:#333;margin-left:0"></span>壁
- <span class="key" style="background:#dcdcdc"></span>床(置ける)
- <span class="key" style="background:#8fbde6"></span>階段(置ける)
- <span class="key" style="background:#f1e9d8"></span>家具など(置けない)
- <span class="key" style="background:#fff"></span>撮れていない所
+<canvas id="view"></canvas>
+<div class="row">この高さから上を隠す: <input id="cut" type="range" min="0" max="1000" value="1000">
+ <span class="note" id="cutText">隠していない</span>
+ <span class="note">(2階の床で1階が見えないときに下げる)</span>
 </div>
 <div class="row" id="placed"></div>
 <h2>2. 運びたい家具の候補を書く</h2>
@@ -276,52 +323,172 @@ PAGE = """<!doctype html>
 <div class="note" id="notes"></div>
 <script>
 let F = null, mode = 'start', pts = {start: null, goal: null};
-let cur = 0, placedOn = {start: null, goal: null};
+let scene = null, bounds = null, unit = 1, pins = {start: null, goal: null};
+let faceSign = 1;   // 面の頂点の並びから出した向きに掛けて、「部屋の内側を向く向き」にする符号
 const NAMES = {start: '出発点', goal: '目的地'};
-// マスの種類(何もない・床・階段・家具など・壁)の色。値は 0〜4 で、境目を 0.2 刻みに置く
-const COLORS = ['#ffffff', '#dcdcdc', '#8fbde6', '#f1e9d8', '#333333'];
-const SCALE = COLORS.flatMap((c, i) => [[i / 5, c], [(i + 1) / 5, c]]);
+const PIN_COLORS = {start: '#27ae60', goal: '#c0392b'};
 function setMode(m) {
   mode = m;
   document.getElementById('mStart').className = m === 'start' ? 'on' : '';
   document.getElementById('mGoal').className = m === 'goal' ? 'on' : '';
 }
-function setFloor(i) {
-  cur = i;
-  const tabs = document.getElementById('tabs');
-  [...tabs.children].forEach((b, j) => { b.className = j === i ? 'on' : ''; });
-  redraw();
+// 元のファイルの座標 -> 判定側の座標(上がZ・cm)
+function toZup(v) {
+  return F.to_zup.slice(0, 3).map(r => r[0] * v.x + r[1] * v.y + r[2] * v.z + r[3]);
 }
-function redraw() {
-  const P = F.plans, f = P.floors[cur];
-  const data = [{type: 'heatmap', z: f.kind, x0: P.x0 + P.cell / 2, dx: P.cell, y0: P.y0 + P.cell / 2, dy: P.cell,
-    zmin: -0.5, zmax: 4.5, colorscale: SCALE, showscale: false, hoverinfo: 'none'}];
-  for (const [k, sym, col] of [['start', 'circle', '#27ae60'], ['goal', 'square', '#c0392b']]) {
-    const p = pts[k];
-    if (p && placedOn[k] === cur) data.push({x: [p[0]], y: [p[1]], mode: 'markers+text', type: 'scatter', text: [NAMES[k]], textposition: 'top center',
-      textfont: {size: 15, color: col}, marker: {size: 18, symbol: sym, color: col, line: {color: 'black', width: 2}}, hoverinfo: 'skip'});
-  }
-  const axis = {showgrid: false, zeroline: false, showticklabels: false, ticks: ''};
-  Plotly.react('plan', data, {xaxis: {...axis, constrain: 'domain'}, yaxis: {...axis, scaleanchor: 'x'},
-    margin: {t: 10, b: 10, l: 10, r: 10}, showlegend: false, dragmode: 'pan', plot_bgcolor: '#fff'}, {scrollZoom: true, displayModeBar: false});
-  // 置いた場所を言葉でも出す(別の階に置いた印は、いまの図には出ないため)
+// 向き(法線)を判定側の座標にしたときの、上向きの成分(-1〜1)
+function upOf(n) {
+  const r = F.to_zup, v = [0, 1, 2].map(i => r[i][0] * n.x + r[i][1] * n.y + r[i][2] * n.z);
+  return v[2] / Math.hypot(v[0], v[1], v[2]);
+}
+function showPlaced(msg) {
   const where = ['start', 'goal'].map(k => NAMES[k] + ': ' +
-    (pts[k] ? (F.plans.floors.length > 1 ? F.plans.floors[placedOn[k]].name + 'に置いた' : '置いた') : 'まだ置いていない'));
-  document.getElementById('placed').textContent = where.join(' / ');
+    (pts[k] ? '置いた(高さ ' + Math.round(pts[k][2]) + 'cm)' : 'まだ置いていない'));
+  document.getElementById('placed').textContent = (msg ? msg + ' / ' : '') + where.join(' / ');
 }
-function onClick(ev) {
-  const p = ev.points[0];
-  if (p.curveNumber !== 0) return;
-  const [iy, ix] = p.pointIndex, f = F.plans.floors[cur];
-  const z = f.z[iy][ix], kind = f.kind[iy][ix];
-  if (z === null || (kind !== F.kinds.floor && kind !== F.kinds.stair)) {
-    document.getElementById('placed').textContent = 'そこには置けません。床(灰色)か階段(青)の上をクリックしてください';
+function putPin(k, p) {
+  if (pins[k]) pins[k].dispose();
+  const h = 60 / unit, r = 9 / unit;   // ピンの長さ60cm・頭の半径9cmを、ファイルの単位にする
+  const mat = new BABYLON.StandardMaterial('pin-' + k, scene);
+  mat.emissiveColor = BABYLON.Color3.FromHexString(PIN_COLORS[k]);
+  mat.disableLighting = true;
+  const stem = BABYLON.MeshBuilder.CreateCylinder('stem', {height: h, diameterTop: r * 0.5, diameterBottom: 0}, scene);
+  stem.position.y = h / 2;
+  const head = BABYLON.MeshBuilder.CreateSphere('head', {diameter: r * 2}, scene);
+  head.position.y = h;
+  const pin = BABYLON.Mesh.MergeMeshes([stem, head], true);
+  pin.material = mat;
+  pin.position.copyFrom(p);
+  pin.isPickable = false;
+  pin.renderingGroupId = 1;   // 壁の向こうにあっても見えるよう、最後に描く
+  pins[k] = pin;
+}
+// 面の向き(頂点の並びから出す。長さは面積の2倍)。部品の getNormal は、頂点に
+// 付いた向きに合わせて符号を変えるので、角の丸められた向きでは当てにならない
+function rawNormal(mesh, face) {
+  const idx = mesh.getIndices(), pos = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+  const v = k => { const i = idx[face * 3 + k] * 3; return new BABYLON.Vector3(pos[i], pos[i + 1], pos[i + 2]); };
+  const a = v(0), n = BABYLON.Vector3.Cross(v(1).subtract(a), v(2).subtract(a));
+  return BABYLON.Vector3.TransformNormal(n, mesh.getWorldMatrix());
+}
+// 一番低い所(床があるはず)の水平な面が、上向きと下向きのどちらで多く出るかを見て、
+// 「部屋の内側を向く向き」の符号を決める(scan_space._floor_facing_z と同じ考え方)
+function findFaceSign(meshes) {
+  let up = 0, down = 0;
+  const top = bounds.min.y + 0.1 * (bounds.max.y - bounds.min.y);
+  for (const m of meshes) {
+    const idx = m.getIndices(), pos = m.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    for (let f = 0; f < idx.length / 3; f++) {
+      const y = (pos[idx[f * 3] * 3 + 1] + pos[idx[f * 3 + 1] * 3 + 1] + pos[idx[f * 3 + 2] * 3 + 1]) / 3;
+      if (y > top) continue;
+      const n = rawNormal(m, f), len = n.length();
+      if (len === 0) continue;
+      if (n.y / len > 0.9) up += len; else if (n.y / len < -0.9) down += len;
+    }
+  }
+  return down > up ? -1 : 1;
+}
+// 画面の (x, y) で、見えている面のうち一番手前のものを返す。
+// 当たり判定は一番手前の面しか返さないので、裏から見ている面(描かれていない)や
+// 隠している高さより上の面に当たったら、その少し先から探し直す
+function pickVisible(x, y) {
+  const ray = scene.createPickingRay(x, y, BABYLON.Matrix.Identity(), scene.activeCamera);
+  const cutY = scene.clipPlane ? -scene.clipPlane.d : Infinity;
+  const step = bounds.max.subtract(bounds.min).length() * 1e-4;
+  for (let i = 0; i < 80; i++) {
+    const h = scene.pickWithRay(ray, m => m.isPickable);
+    if (!h || !h.hit) return null;
+    const n = rawNormal(h.pickedMesh, h.faceId).scale(faceSign);
+    if (h.pickedPoint.y <= cutY && BABYLON.Vector3.Dot(n, ray.direction) < 0) return {point: h.pickedPoint, normal: n};
+    ray.origin = h.pickedPoint.add(ray.direction.scale(step));
+  }
+  return null;
+}
+function onTap(x, y) {
+  const hit = pickVisible(x, y);
+  if (!hit) { showPlaced('何もない所です。床の上をクリックしてください'); return; }
+  if (upOf(hit.normal) < 0.7) { showPlaced('そこは壁か天井です。床の上をクリックしてください'); return; }
+  pts[mode] = toZup(hit.point).map(v => Math.round(v * 10) / 10);
+  putPin(mode, hit.point);
+  if (mode === 'start') setMode('goal');
+  showPlaced();
+}
+function setCut() {
+  const s = document.getElementById('cut'), t = s.value / s.max;
+  if (t >= 1) { scene.clipPlane = null; document.getElementById('cutText').textContent = '隠していない'; return; }
+  const y = bounds.min.y + (bounds.max.y - bounds.min.y) * t;
+  scene.clipPlane = new BABYLON.Plane(0, 1, 0, -y);   // y より上を描かない
+  document.getElementById('cutText').textContent = '高さ ' + Math.round(toZup({x: 0, y: y, z: 0})[2]) + 'cm より上を隠している';
+}
+async function startView() {
+  const info = document.getElementById('info');
+  if (typeof BABYLON === 'undefined') {
+    info.textContent = '立体表示の部品がありません。phase2 で「python fetch_viewer.py」を一度実行してから、scan_picker を立て直してください';
     return;
   }
-  pts[mode] = [p.x, p.y, z];
-  placedOn[mode] = cur;
-  if (mode === 'start') setMode('goal');
-  redraw();
+  const canvas = document.getElementById('view');
+  const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer: true});
+  scene = new BABYLON.Scene(engine);
+  scene.useRightHandedSystem = true;   // ファイルの座標をそのまま使う(左右を反転させない)
+  scene.clearColor = new BABYLON.Color4(0.95, 0.95, 0.95, 1);
+  new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0.3, 1, 0.2), scene);
+  info.textContent = 'スキャンを読み込んでいます...';
+  const cut = F.scan.lastIndexOf('/') + 1;
+  const t0 = Date.now();
+  let res;
+  try {
+    res = await BABYLON.SceneLoader.ImportMeshAsync('', F.scan.slice(0, cut), F.scan.slice(cut), scene, ev => {
+      if (ev.lengthComputable) info.textContent = 'スキャンを読み込んでいます... ' + Math.round(100 * ev.loaded / ev.total) + '%';
+    });
+  } catch (e) {
+    info.textContent = 'スキャンを読み込めませんでした: ' + e.message;
+    return;
+  }
+  const meshes = res.meshes.filter(m => m.getTotalVertices() > 0);
+  let min = null, max = null;
+  for (const m of meshes) {
+    m.computeWorldMatrix(true);
+    const b = m.getBoundingInfo().boundingBox;
+    min = min ? BABYLON.Vector3.Minimize(min, b.minimumWorld) : b.minimumWorld.clone();
+    max = max ? BABYLON.Vector3.Maximize(max, b.maximumWorld) : b.maximumWorld.clone();
+  }
+  bounds = {min, max};
+  faceSign = findFaceSign(meshes);
+  for (const m of meshes) {
+    if (!m.material) m.material = new BABYLON.StandardMaterial('scan', scene);
+    const mat = m.material;
+    // 部屋の内側を向いた面だけ描く。外から見ると、手前の壁や天井が透けて中が見える
+    // (サンドボックスと同じ見え方)。この設定(右手系)では、頂点の並びから出した
+    // 向きが奥を向く面が描かれる。内側を向く符号が逆のファイルでは、描く側も逆にする
+    mat.backFaceCulling = true;
+    if (faceSign > 0) mat.sideOrientation = BABYLON.Material.CounterClockWiseSideOrientation;
+    if (mat.diffuseTexture) {       // 写真つきなら、照明をかけずに写真の色のまま出す
+      mat.emissiveTexture = mat.diffuseTexture;
+      mat.disableLighting = true;
+    } else {
+      m.convertToFlatShadedMesh();   // 写真が無いときは、面ごとの陰で形が分かるようにする
+      mat.diffuseColor = new BABYLON.Color3(0.8, 0.8, 0.82);
+      mat.specularColor = new BABYLON.Color3(0, 0, 0);
+    }
+  }
+  unit = Math.hypot(F.to_zup[0][0], F.to_zup[1][0], F.to_zup[2][0]);   // ファイルの1単位が何cmか
+  const center = min.add(max).scale(0.5), size = max.subtract(min).length();
+  const cam = new BABYLON.ArcRotateCamera('cam', -Math.PI / 3, Math.PI / 3.2, size * 1.1, center, scene);
+  cam.minZ = size / 2000; cam.maxZ = size * 20;
+  cam.lowerRadiusLimit = size / 200; cam.upperRadiusLimit = size * 5;
+  cam.wheelDeltaPercentage = 0.03;
+  cam.panningSensibility = 2000 / size;
+  cam.attachControl(canvas, true);
+  // 回すためのドラッグでは置かない(動かさずに離したときだけ置く)
+  scene.onPointerObservable.add(pi => {
+    if (pi.type === BABYLON.PointerEventTypes.POINTERTAP && pi.event.button === 0) onTap(scene.pointerX, scene.pointerY);
+  });
+  document.getElementById('cut').oninput = setCut;
+  engine.runRenderLoop(() => scene.render());
+  window.addEventListener('resize', () => engine.resize());
+  info.textContent = '運ぶ人 ' + F.carriers + '人 / 左ドラッグで回す、右ドラッグで動かす、ホイールで寄る・引く。床をクリックするとピンが立つ' +
+    ' (読み込み ' + ((Date.now() - t0) / 1000).toFixed(1) + '秒)';
+  showPlaced();
 }
 function el(tag, text, cls) {
   const e = document.createElement(tag);
@@ -416,18 +583,6 @@ async function judge() {
 function status(t) { document.getElementById('status').textContent = t; }
 fetch('/floor').then(r => r.json()).then(d => {
   F = d;
-  document.getElementById('info').textContent = '運ぶ人 ' + d.carriers + '人' +
-    ' / スキャンから作った間取り図。床か階段をクリックして置く(ドラッグで動かす、ホイールで拡大)';
-  if (!d.plans.floors.length) {
-    document.getElementById('info').textContent = 'このスキャンから床が見つかりませんでした。床が写るように撮り直してください';
-    return;
-  }
-  const tabs = document.getElementById('tabs');
-  if (d.plans.floors.length > 1) d.plans.floors.forEach((f, i) => {
-    const b = el('button', f.name);
-    b.onclick = () => setFloor(i);
-    tabs.appendChild(b);
-  });
   document.getElementById('items').value = d.items;
   const by = document.getElementById('by');
   for (const p of d.presets) { const o = el('option', p.label); o.value = p.key; by.appendChild(o); }
@@ -438,8 +593,7 @@ fetch('/floor').then(r => r.json()).then(d => {
   const ul = el('ul');
   for (const n of d.notes) ul.appendChild(el('li', n));
   notes.appendChild(ul);
-  setFloor(0);
-  document.getElementById('plan').on('plotly_click', onClick);
+  startView();
 });
 </script></body></html>
 """
@@ -457,6 +611,20 @@ def make_handler(app):
             self.end_headers()
             self.wfile.write(data)
 
+        def _file(self, folder, url_path, types):
+            """folder の直下にある、決めた種類のファイルだけを配る。"""
+            f = Path(folder) / Path(unquote(url_path)).name
+            ctype = types.get(f.suffix.lower())
+            if ctype is None or not f.is_file():
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(f.stat().st_size))
+            self.end_headers()
+            with open(f, "rb") as src:
+                shutil.copyfileobj(src, self.wfile)
+
         def _json(self, obj):
             self._send(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
@@ -467,6 +635,10 @@ def make_handler(app):
                 self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif u.path == "/plotly.min.js":
                 self._send(PLOTLY_JS.read_bytes(), "application/javascript")
+            elif u.path.startswith("/vendor/"):
+                self._file(fetch_viewer.VENDOR_DIR, u.path, VENDOR_TYPES)
+            elif u.path.startswith("/scan/"):
+                self._file(app.view["dir"], u.path, VIEW_TYPES)
             elif u.path == "/floor":
                 self._json(app.floor_json())
             elif u.path == "/status":
@@ -537,12 +709,16 @@ def main():
         import route_env as R
         mesh = M.env_to_mesh(*R.build_route())
         mesh.invert()   # スキャンと同じ「面が自由空間側を向く」向きにする
+        view = view_of_mesh(mesh)
     elif args.mesh:
         import scan_ingest as SI
-        mesh, _ = SI.load_scan_zup(args.mesh)
+        mesh, info = SI.load_scan_zup(args.mesh)
+        view = view_of_scan(args.mesh, info["to_zup"])
     else:
         parser.error("mesh を指定する(または --route)")
-    app = App(mesh, args.carriers, seed=args.seed, items_text=items_text)
+    if fetch_viewer.missing():
+        print("[picker] 立体表示の部品がありません。先に python fetch_viewer.py を実行してください")
+    app = App(mesh, view, args.carriers, seed=args.seed, items_text=items_text)
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(app))
     url = f"http://localhost:{args.port}"
     print(f"[picker] {url} で起動しました(Ctrl+Cで終了)")
