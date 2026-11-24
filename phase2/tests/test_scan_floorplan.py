@@ -167,3 +167,19 @@ def test_plans_show_stairs_that_lead_above_the_only_floor():
     kind, z = _at(plans, 0, 252, 50)
     assert kind == fp.STAIR
     assert z == pytest.approx(35 + 27 * 5)
+
+
+def test_plans_let_a_low_entrance_floor_be_placed_on():
+    # 床(z=40)より40cm低い玄関の土間(z=0)。床の帯(±30cm)からは外れる
+    up = np.vstack([_patch(0, 300, 0, 100, 40), _patch(300, 400, 0, 100, 0)])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [40.0], [[0, 0], [400, 100]])
+    assert _at(plans, 0, 350, 50) == (fp.FLOOR, 0.0)
+    assert _at(plans, 0, 150, 50) == (fp.FLOOR, 40.0)
+
+
+def test_plans_do_not_take_a_face_far_below_the_floor_as_a_floor():
+    # 床より2m低い面(撮れてしまった外の地面など)は、同じ階の床にしない
+    up = np.vstack([_patch(0, 300, 0, 100, 200), _patch(300, 400, 0, 100, 0)])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [200.0], [[0, 0], [400, 100]])
+    kind, z = _at(plans, 0, 350, 50)
+    assert kind == fp.OTHER and np.isnan(z)

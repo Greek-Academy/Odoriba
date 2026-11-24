@@ -180,9 +180,16 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
         kind = np.full(shape, NOTHING, dtype=np.uint8)
         z = np.full(shape, np.nan)
         below, above = gaps[i], gaps[i + 1]
-        # 家具など: この階の上にある、階段でない上向きの面。一番下の階には、
-        # それより下の面も入れる
-        kind[above[1] | (below[1] if i == 0 else empty)] = OTHER
+        # 家具など: この階の上にある、階段でない上向きの面
+        kind[above[1]] = OTHER
+        if i == 0:
+            # 一番下の階より下の面。床から LEVEL_MERGE 以内(find_levels が同じ階に
+            # まとめる範囲)は、玄関の土間のような低い床として置けるようにする。
+            # 出発点はたいてい玄関なので、ここを「家具など」にすると置けなくなる
+            low = below[1] & (below[2] > level - LEVEL_MERGE)
+            kind[below[1] & ~low] = OTHER
+            kind[low] = FLOOR
+            z[low] = below[2][low]
         has, mean = floor_cells[i]
         near = ndimage.binary_dilation(has, iterations=STAIR_TOUCH)
         for stairs, _, stair_z in (below, above):
