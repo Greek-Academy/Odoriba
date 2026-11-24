@@ -570,7 +570,9 @@ class ScanSpace:
         s_node, g_node = nearest(start_xyz), nearest(goal_xyz)
         dist, pred = dijkstra(graph, indices=s_node, return_predecessors=True)
         if not np.isfinite(dist[g_node]):
-            raise ValueError("出発点から目的地まで歩ける床がつながっていない")
+            raise ValueError("出発点から目的地まで、歩ける床がつながっていません。"
+                             "家具の上など床でない所に置いていないか、途中の扉が閉まった"
+                             "まま撮っていないか、途中の床が撮れているかを確かめてください")
         path = [g_node]
         while path[-1] != s_node:
             path.append(int(pred[path[-1]]))
