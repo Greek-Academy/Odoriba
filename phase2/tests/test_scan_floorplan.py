@@ -149,3 +149,21 @@ def test_to_json_turns_cells_without_a_height_into_none(house):
     assert data["floors"][1]["kind"][10][70] == fp.FLOOR
     import json
     json.dumps(data)   # そのまま送れる
+
+
+# ---- 以前の図では置けた場所に、置けること ----
+
+def test_find_levels_takes_a_small_upper_floor_as_a_floor():
+    # 経路だけを撮ると、2階は廊下(2㎡)だけで、1階(24㎡)よりずっと狭い
+    levels = fp.find_levels(*_faces((5.0, 24.0), (275.0, 2.0)))
+    assert levels == pytest.approx([5.0, 275.0])
+
+
+def test_plans_show_stairs_that_lead_above_the_only_floor():
+    # 階が1つで、上へ続く階段と踊り場(階として見つからない広さ)だけが撮れている
+    steps = [_patch(200 + 10 * i, 210 + 10 * i, 0, 100, 35 + 27 * i) for i in range(8)]
+    up = np.vstack([_patch(0, 200, 0, 100, 0), *steps])
+    plans = fp.plans_from_points(up, np.zeros((0, 3)), [0.0], [[0, 0], [400, 100]])
+    kind, z = _at(plans, 0, 252, 50)
+    assert kind == fp.STAIR
+    assert z == pytest.approx(35 + 27 * 5)

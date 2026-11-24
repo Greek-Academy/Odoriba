@@ -18,7 +18,6 @@ import numpy as np
 # 踊り場は1㎡弱だった。
 LEVEL_BIN = 10.0          # 高さを集計する刻み(cm)
 LEVEL_MIN_AREA = 1.0e4    # これ以上の面積(cm²)がある高さを階の候補にする
-LEVEL_MIN_RATIO = 0.2     # 一番広い高さに対して、これ未満の山は階にしない
 LEVEL_MERGE = 100.0       # この高さの差(cm)未満の山は同じ階(玄関の段差など)
 
 
@@ -29,6 +28,10 @@ def find_levels(z, area):
     中で一番広い高さを、その階の床の高さにする(机やベッドの上面が床より
     狭ければ、床のほうが選ばれる)。小さなスキャンで候補が1つも無いときは、
     一番広い高さを階にする。
+
+    「一番広い階に比べて狭い高さは階にしない」という条件は付けない。運び込みの
+    経路だけを撮ると、2階は廊下だけで1階よりずっと狭くなり、2階が階に
+    ならず置けなくなるため。
     """
     z = np.asarray(z, dtype=float)
     area = np.asarray(area, dtype=float)
@@ -37,8 +40,7 @@ def find_levels(z, area):
     lo = np.floor(z.min() / LEVEL_BIN) * LEVEL_BIN
     idx = ((z - lo) // LEVEL_BIN).astype(int)
     hist = np.bincount(idx, weights=area)
-    need = max(LEVEL_MIN_AREA, LEVEL_MIN_RATIO * hist.max())
-    big = np.flatnonzero(hist >= need)
+    big = np.flatnonzero(hist >= LEVEL_MIN_AREA)
     if len(big) == 0:
         big = np.array([int(np.argmax(hist))])
     groups = [[int(big[0])]]
@@ -141,6 +143,8 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
     階段は、床がつながっている階の図に出す。ふつうは上下の両方の階に出る
     (どちらの階から見ても置けるように)。片方の階にしかつながっていない
     かたまり(途中までしか撮れていない階段など)は、その階にだけ出す。
+    一番上の階より上へ続くかたまりも同じ(上の階が狭くて階として見つから
+    なかったときや、階段と踊り場だけを撮ったときに、階段へ置けるように)。
     """
     from scipy import ndimage
 
@@ -165,10 +169,10 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
         m = (up[:, 2] > lo + FLOOR_BAND) & (up[:, 2] < hi - FLOOR_BAND)
         if not m.any():
             gaps.append(nothing)
-        elif np.isfinite(lo) and np.isfinite(hi):
+        elif np.isfinite(lo):
             gaps.append(_stairs_between(grid, up[m]))
         else:
-            has, mean, _, _ = grid.stats(up[m])   # 行き先の階が無いので階段ではない
+            has, mean, _, _ = grid.stats(up[m])   # 一番下の階より下。階段にはしない
             gaps.append(([], has, mean))
 
     floors = []
@@ -187,10 +191,10 @@ def plans_from_points(up, side, levels, bounds_xy, cell=CELL):
                     kind[comp] = STAIR
                     z[comp] = stair_z[comp]
         # どの階の床にもつながらない階段のかたまりは、下の階に「家具など」で出す
+        upper = floor_cells[i + 1][0] if i + 1 < len(levels) else empty
+        near_upper = ndimage.binary_dilation(upper, iterations=STAIR_TOUCH)
         for comp in above[0]:
-            upper = floor_cells[i + 1][0]
-            if not (comp & near).any() and not (
-                    comp & ndimage.binary_dilation(upper, iterations=STAIR_TOUCH)).any():
+            if not (comp & near).any() and not (comp & near_upper).any():
                 kind[comp] = OTHER
         # 床が撮れていても、すぐ上に机などの上面があるマスは「家具など」のままにする
         # (高い棚の上面や鴨居の下は歩けるので、床にする)
