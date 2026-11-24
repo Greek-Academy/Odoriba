@@ -360,28 +360,47 @@ def format_row(row):
     return text
 
 
-def read_csv(path):
-    """名前,幅,奥行,高さ[,重さkg] のCSVを読む。(候補, 読めなかった行) を返す。
+def parse_rows(records, header=True):
+    """[名前, 幅, 奥行, 高さ(, 重さkg)] の文字列の並びを候補にする。
 
-    1行目が数値でなければ見出しとして飛ばす。それ以外で読めない行は、
-    黙って落とすと候補が減ったことに気づけないので、呼び出し側に返す。
-    重さ(5列目)は省いてよい。書いてあって数値でない行は、重さなしとして
-    判定すると甘くなるので、読めない行にする。
+    (候補, 読めなかった行) を返す。読めない行は、黙って落とすと候補が
+    減ったことに気づけないので、呼び出し側に返す。header が真なら、1行目が
+    数値でないときだけ見出しとして飛ばす。重さ(5列目)は省いてよい。書いて
+    あって数値でない行は、重さなしとして判定すると甘くなるので、読めない
+    行にする。
     """
     items, skipped = [], []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        for i, rec in enumerate(csv.reader(f)):
-            if not any(x.strip() for x in rec):
-                continue
-            try:
-                item = (rec[0], float(rec[1]), float(rec[2]), float(rec[3]))
-                if len(rec) > 4 and rec[4].strip():
-                    item += (float(rec[4]),)
-                items.append(item)
-            except (ValueError, IndexError):
-                if i > 0:
-                    skipped.append(",".join(rec))
+    for i, rec in enumerate(records):
+        if not any(x.strip() for x in rec):
+            continue
+        try:
+            item = (rec[0].strip(), float(rec[1]), float(rec[2]), float(rec[3]))
+            if len(rec) > 4 and rec[4].strip():
+                item += (float(rec[4]),)
+            items.append(item)
+        except (ValueError, IndexError):
+            if i > 0 or not header:
+                skipped.append(",".join(rec))
     return items, skipped
+
+
+def read_csv(path):
+    """名前,幅,奥行,高さ[,重さkg] のCSVを読む。(候補, 読めなかった行) を返す。"""
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        return parse_rows(csv.reader(f))
+
+
+def parse_text(text):
+    """1行1候補の文字列(画面の入力欄)を読む。見出しは無いものとして扱う。"""
+    return parse_rows(csv.reader(text.replace("、", ",").replace("，", ",").splitlines()), header=False)
+
+
+def size_error(item):
+    """候補の寸法・重さが正の有限の数でなければ、その理由を返す(よければ None)。"""
+    name, *size = item
+    if not all(np.isfinite(size)) or min(size) <= 0:
+        return f"{name}: 寸法と重さは正の数(cm、kg)で指定する"
+    return None
 
 
 def build_space(args, parser):
@@ -453,9 +472,9 @@ def main():
             print(f"警告: CSVのこの行は読めなかったので飛ばします: {line}")
     if not items:
         parser.error("候補が無い(--item か --csv で指定する)")
-    for name, *size in items:
-        if not all(np.isfinite(size)) or min(size) <= 0:
-            parser.error(f"{name}: 寸法と重さは正の数(cm、kg)で指定する")
+    for item in items:
+        if size_error(item):
+            parser.error(size_error(item))
 
     space = build_space(args, parser)
     print(f"経路の長さ {space.centerline.s_total:.0f}cm、運ぶ人 {args.carriers}人、"
