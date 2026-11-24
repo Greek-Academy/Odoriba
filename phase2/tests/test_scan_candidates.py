@@ -212,3 +212,56 @@ def test_read_csv_reports_rows_it_could_not_read(tmp_path):
     items, skipped = sc.read_csv(path)
     assert items == [("ソファ", 180.0, 85.0, 80.0)]
     assert skipped == ["棚,90cm,40,180"]
+
+
+# ---- 何kgまで運べるか ----
+
+def _result_by_tilt(by_tilt, max_tilt=55.0, **kwargs):
+    """傾きの上限ごとの余裕 [(上限, 余裕), ...] を持つ judge の結果。
+
+    今の設定での余裕は、max_tilt 以下で一番大きい上限のものにする。
+    """
+    now = [c for t, c in by_tilt if t <= max_tilt][-1]
+    result = _result(now, **kwargs)
+    result["bottleneck"]["max_tilt_deg"] = max_tilt
+    result["bottleneck_by_tilt"] = [
+        dict(_result(c, **kwargs)["bottleneck"], max_tilt_deg=t) for t, c in by_tilt]
+    return result
+
+
+_TILTS_PASS_FROM_30 = [(0.0, -20.0), (15.0, -20.0), (30.0, 12.0), (45.0, 12.0),
+                       (55.0, 12.0), (70.0, 30.0), (85.0, 30.0), (90.0, 30.0)]
+
+
+def test_weight_limit_comes_from_the_smallest_tilt_that_passes(monkeypatch):
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result_by_tilt(_TILTS_PASS_FROM_30))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["verdict"] == "ok" and row["needed_tilt_deg"] == 30.0
+    # 下側の人の割合 = 1/2 + (高さ/2·長さ)·tan30° = 0.673。業者40kg・自分たち25kgをこれで割る
+    assert row["weight_limit_kg"]["mover"] == pytest.approx(40.0 / 0.6732, abs=0.05)
+    assert row["weight_limit_kg"]["diy"] == pytest.approx(25.0 / 0.6732, abs=0.05)
+    assert "[業者なら59kgまで / 自分たちなら37kgまで]" in sc.format_row(row)
+
+
+def test_weight_limit_uses_the_size_of_the_candidate(monkeypatch):
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result_by_tilt(_TILTS_PASS_FROM_30))
+    rows = sc.judge_candidates(_Space(), [("短い", 100.0, 45.0, 60.0),
+                                          ("長い", 200.0, 45.0, 60.0)], log=lambda *_: None)
+    # 同じ傾きでも、長い家具ほど下側の人に寄る重さが小さい
+    assert rows[1]["weight_limit_kg"]["mover"] > rows[0]["weight_limit_kg"]["mover"]
+
+
+def test_weight_limit_is_flat_carry_when_no_tilt_is_needed(monkeypatch):
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result_by_tilt(
+        [(0.0, 12.0), (55.0, 12.0), (90.0, 12.0)]))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["needed_tilt_deg"] == 0.0
+    assert row["weight_limit_kg"] == {"mover": 80.0, "diy": 50.0}   # 2人で半分ずつ
+
+
+def test_weight_limit_is_not_given_for_a_candidate_that_does_not_fit(monkeypatch):
+    monkeypatch.setattr(sp, "judge", lambda space, **kw: _result_by_tilt(
+        [(0.0, -20.0), (55.0, -20.0), (90.0, -20.0)]))
+    row = sc.judge_candidates(_Space(), [("箱", 100.0, 45.0, 60.0)], log=lambda *_: None)[0]
+    assert row["verdict"] == "ng" and "weight_limit_kg" not in row
+    assert "kgまで" not in sc.format_row(row)

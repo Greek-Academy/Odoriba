@@ -11,6 +11,9 @@
 判定を決めた所の余裕を表にする。○は掃引だけで出した見込みで、断定ではない。「何cmまで入る」と1つの数字にしないのは、
 幅・奥行・高さが取り合いになり、1つの上限では言えないため。
 
+入る見込み・際どい候補には「何kgまでなら運べるか」も付ける。重さは傾けてよい
+角度にだけ効くので、通すのに要る傾きから逆算できる(重さを聞かなくても出せる)。
+
 判定は scan_plan.judge の掃引(1件あたり十数秒〜1分)を寸法を変えて
 繰り返すだけで、可搬性オラクルもプランナーも変えていない。
 """
@@ -45,7 +48,12 @@ NOTES = (
     "より先に置く",
     "家具の表面は粗い点で見ているので、大きい家具では手すりのような細い"
     "出っ張りを見逃すことがある",
+    "「何kgまで」は、1人が支えられる重さを業者40kg・自分たち25kgと仮に置いた"
+    "値(実測ではない)。商品ページの重さと見比べる目安にする",
 )
+
+# 1人が支えられる重さの設定(phase2_lstair.CARRIER_PRESETS)の、利用者に見せる名前
+PRESET_TEXT = {"mover": "業者", "diy": "自分たち"}
 
 # 余裕を決めた項を、利用者に見せる言葉にしたもの
 TERM_TEXT = {"furniture": "家具と壁の間", "body": "運ぶ人と壁の間",
@@ -181,6 +189,37 @@ def _summarize(space, result):
     }
 
 
+def _needed_tilt(verdicts, verdict, max_tilt_deg):
+    """その判定に届く一番小さい傾きの上限(度)。
+
+    verdicts は [(傾きの上限, その上限での判定), ...]。max_tilt_deg(今の設定で
+    許される傾き)以下の中から探す。見つからなければ max_tilt_deg を返す。
+    """
+    for t, v in sorted(verdicts):
+        if t <= max_tilt_deg + 1e-9 and v == verdict:
+            return t
+    return max_tilt_deg
+
+
+def _weight_info(space, result, row, num_carriers):
+    """「何kgまで運べるか」を、傾きごとの掃引結果から出す。
+
+    重さは傾けてよい角度にだけ効く(傾けるほど下側の人の負担が増える)。
+    だから、今の判定に届く一番小さい傾きが分かれば、その傾きで下側の人が
+    支えきれる重さが、判定が変わらない重さの上限になる。
+    掃引の傾きは15度刻みなので、求まる傾きは実際より大きめ、上限の重さは
+    小さめ(厳しめ)に出る。家具の寸法を差し替えた状態で呼ぶこと。
+    """
+    by_tilt = result.get("bottleneck_by_tilt")
+    if not by_tilt or row["verdict"] not in ("ok", "close"):
+        return {}
+    verdicts = [(e["max_tilt_deg"], _decide(space, e)[0]) for e in by_tilt]
+    tilt = _needed_tilt(verdicts, row["verdict"], result["bottleneck"]["max_tilt_deg"])
+    return {"needed_tilt_deg": tilt,
+            "weight_limit_kg": {name: float(L.weight_limit_kg(tilt, num_carriers, name))
+                                for name in L.CARRIER_PRESETS}}
+
+
 def _rank(row):
     """向きを比べるときの良さ(大きいほど良い)。"""
     return (_ORDER[row["verdict"]], not row["no_pose_s"], row["capacity_cm"])
@@ -201,11 +240,12 @@ def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=prin
                 dims = [L.FURN_L, L.FURN_W, L.FURN_H]
                 try:
                     result = SP.judge(space, num_carriers=num_carriers, rrt=False,
-                                      log=lambda *_: None)
+                                      tilt_detail=True, log=lambda *_: None)
                 except ValueError as e:
                     errors.append(str(e))
                     continue
-            row = _summarize(space, result)
+                row = _summarize(space, result)
+                row.update(_weight_info(space, result, row, num_carriers))
             row["carried_as"] = dims
             if best is None or _rank(row) > _rank(best):
                 best = row
@@ -243,6 +283,11 @@ def format_row(row):
     carried = row.get("carried_as")
     if carried and carried[2] != h:
         text += f"  [{carried[2]:.0f}cmの辺を上下にして運ぶ]"
+    limits = row.get("weight_limit_kg")
+    if limits:
+        # 切り捨てて出す(上限を少しでも超える数字を見せない)
+        text += "  [" + " / ".join(f"{PRESET_TEXT[name]}なら{int(kg)}kgまで"
+                                   for name, kg in limits.items()) + "]"
     return text
 
 
