@@ -58,3 +58,23 @@ def test_real_stair_scan_has_treads_facing_up():
     # 床から2階までの間、20cm刻みの各帯に上向きの面(踏み面)がある
     for z0 in range(20, 260, 40):
         assert area[up & (z >= z0) & (z < z0 + 40)].sum() > 500.0, z0
+
+
+@pytest.mark.parametrize("unit_scale", [1.0, 100.0])   # ファイルの単位が m / cm
+def test_to_zup_maps_file_coordinates_onto_the_loaded_mesh(tmp_path, unit_scale):
+    # 画面は元のファイルをそのまま表示するので、そこで選んだ点を判定側の座標に
+    # 直す行列が、load_scan_zup の変換と同じであること
+    path = _yup_floor_with_step(tmp_path)
+    raw = si.load_mesh(path)
+    if unit_scale != 1.0:
+        raw.apply_scale(unit_scale)
+        raw.export(path)
+    m, info = si.load_scan_zup(path)
+    T = np.array(info["to_zup"])
+    assert T.shape == (4, 4)
+    file_xyz = np.asarray(si.load_mesh(path).vertices)
+    mapped = (T @ np.column_stack([file_xyz, np.ones(len(file_xyz))]).T).T[:, :3]
+    assert mapped == pytest.approx(np.asarray(m.vertices), abs=1e-6)
+    # 元のファイルで上(+Y)の向きは、判定側では高さ(+Z)になる
+    up = T[:3, :3] @ [0.0, 1.0, 0.0]
+    assert up[2] > 0 and abs(up[0]) < 1e-9 and abs(up[1]) < 1e-9
