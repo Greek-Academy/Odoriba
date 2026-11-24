@@ -454,7 +454,7 @@ def main():
     if not items:
         parser.error("候補が無い(--item か --csv で指定する)")
     for name, *size in items:
-        if min(size) <= 0:
+        if not all(np.isfinite(size)) or min(size) <= 0:
             parser.error(f"{name}: 寸法と重さは正の数(cm、kg)で指定する")
 
     space = build_space(args, parser)
