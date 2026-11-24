@@ -341,3 +341,47 @@ def test_read_csv_takes_an_optional_weight_column(tmp_path):
     items, skipped = sc.read_csv(path)
     assert items == [("ソファ", 180.0, 85.0, 80.0), ("冷蔵庫", 70.0, 65.0, 180.0, 100.0)]
     assert skipped == ["棚,90,40,180,重い"]
+
+
+# ---- 画面の入力欄(1行1候補の文字列) ----
+
+def test_parse_text_reads_one_candidate_per_line():
+    text = "ソファ, 180, 85, 80\n\n冷蔵庫,70,65,180,100\n棚、90、40、180\n"
+    items, skipped = sc.parse_text(text)
+    assert items == [("ソファ", 180.0, 85.0, 80.0), ("冷蔵庫", 70.0, 65.0, 180.0, 100.0),
+                     ("棚", 90.0, 40.0, 180.0)]
+    assert skipped == []
+
+
+def test_parse_text_reports_an_unreadable_first_line():
+    # 入力欄に見出しは無い。1行目が読めなくても黙って落とさない
+    items, skipped = sc.parse_text("ソファ,大きい,85,80\n棚,90,40,180\n机,120,60")
+    assert items == [("棚", 90.0, 40.0, 180.0)]
+    assert skipped == ["ソファ,大きい,85,80", "机,120,60"]
+
+
+@pytest.mark.parametrize("item", [("棚", 90.0, 0.0, 180.0), ("棚", 90.0, 40.0, float("nan")),
+                                  ("棚", 90.0, 40.0, 180.0, float("inf")),
+                                  ("棚", 90.0, 40.0, 180.0, -5.0)])
+def test_size_error_rejects_sizes_that_are_not_positive_numbers(item):
+    assert "棚" in sc.size_error(item)
+
+
+def test_size_error_accepts_a_normal_candidate():
+    assert sc.size_error(("棚", 90.0, 40.0, 180.0)) is None
+    assert sc.size_error(("棚", 90.0, 40.0, 180.0, 30.0)) is None
+
+
+def test_judge_candidates_reports_each_row_as_it_finishes(monkeypatch):
+    def fake_judge(space, **kwargs):
+        if L.FURN_L >= 300.0:
+            raise ValueError("経路が短すぎて掃引できない")
+        return _result(12.0)
+
+    monkeypatch.setattr(sp, "judge", fake_judge)
+    seen = []
+    rows = sc.judge_candidates(_Space(), [("長すぎ", 300.0, 50.0, 50.0),
+                                          ("小", 60.0, 40.0, 40.0)],
+                               log=lambda *_: None, on_row=seen.append)
+    assert seen == rows
+    assert [r["name"] for r in seen] == ["長すぎ", "小"]

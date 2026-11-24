@@ -270,7 +270,7 @@ def _rank(row):
 
 
 def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=print,
-                     carried_by=None):
+                     carried_by=None, on_row=None):
     """候補 [(名前, 幅, 奥行, 高さ) or (名前, 幅, 奥行, 高さ, 重さkg), ...] を1件ずつ判定する。
 
     space は中心線を作り終えた ScanSpace。戻り値は候補ごとの dict のリスト
@@ -280,7 +280,8 @@ def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=prin
     重さがある候補は、下側の人の負担が1人の上限を超えない傾きまでで判定する
     (重さが無い候補は固定の傾き上限)。carried_by は誰が運ぶか
     (phase2_lstair.CARRIER_PRESETS の名前。既定は CARRIER_PRESET)で、
-    1人の上限を決める。
+    1人の上限を決める。on_row を渡すと、1件終わるごとにその結果の dict で
+    呼ぶ(画面に進み具合を出すため)。
     """
     carried_by = carried_by or L.CARRIER_PRESET
     rows = []
@@ -311,6 +312,8 @@ def judge_candidates(space, candidates, num_carriers=2, any_side=False, log=prin
             row.update(weight_kg=weight, carried_by=carried_by)
         rows.append(row)
         log(format_row(row))
+        if on_row:
+            on_row(row)
     return rows
 
 
@@ -343,45 +346,72 @@ def shortage_text(row):
     return f"{amount}({detail})"
 
 
-def format_row(row):
+def row_parts(row):
+    """1件の結果を、表の列ごとの言葉にする(端末の1行と画面の表で同じ文言を使う)。"""
     w, d, h = row["size"]
     size = f"{w:.0f}×{d:.0f}×{h:.0f}cm"
     if row.get("weight_kg") is not None:
         size += f" {row['weight_kg']:.0f}kg"
-    text = f"{MARKS[row['verdict']]} {row['name']}  {size}  {shortage_text(row)}"
+    extras = []
     carried = row.get("carried_as")
     if carried and carried[2] != h:
-        text += f"  [{carried[2]:.0f}cmの辺を上下にして運ぶ]"
+        extras.append(f"{carried[2]:.0f}cmの辺を上下にして運ぶ")
     limits = row.get("weight_limit_kg")
     if limits:
         # 切り捨てて出す(上限を少しでも超える数字を見せない)
-        text += "  [" + " / ".join(f"{PRESET_TEXT[name]}なら{int(kg)}kgまで"
-                                   for name, kg in limits.items()) + "]"
-    return text
+        extras.append(" / ".join(f"{PRESET_TEXT[name]}なら{int(kg)}kgまで"
+                                 for name, kg in limits.items()))
+    return {"mark": MARKS[row["verdict"]], "name": row["name"], "size": size,
+            "reason": shortage_text(row), "extras": extras}
+
+
+def format_row(row):
+    p = row_parts(row)
+    text = f"{p['mark']} {p['name']}  {p['size']}  {p['reason']}"
+    return text + "".join(f"  [{x}]" for x in p["extras"])
+
+
+def parse_rows(records, header=True):
+    """[名前, 幅, 奥行, 高さ(, 重さkg)] の文字列の並びを候補にする。
+
+    (候補, 読めなかった行) を返す。読めない行は、黙って落とすと候補が
+    減ったことに気づけないので、呼び出し側に返す。header が真なら、1行目が
+    数値でないときだけ見出しとして飛ばす。重さ(5列目)は省いてよい。書いて
+    あって数値でない行は、重さなしとして判定すると甘くなるので、読めない
+    行にする。
+    """
+    items, skipped = [], []
+    for i, rec in enumerate(records):
+        if not any(x.strip() for x in rec):
+            continue
+        try:
+            item = (rec[0].strip(), float(rec[1]), float(rec[2]), float(rec[3]))
+            if len(rec) > 4 and rec[4].strip():
+                item += (float(rec[4]),)
+            items.append(item)
+        except (ValueError, IndexError):
+            if i > 0 or not header:
+                skipped.append(",".join(rec))
+    return items, skipped
 
 
 def read_csv(path):
-    """名前,幅,奥行,高さ[,重さkg] のCSVを読む。(候補, 読めなかった行) を返す。
-
-    1行目が数値でなければ見出しとして飛ばす。それ以外で読めない行は、
-    黙って落とすと候補が減ったことに気づけないので、呼び出し側に返す。
-    重さ(5列目)は省いてよい。書いてあって数値でない行は、重さなしとして
-    判定すると甘くなるので、読めない行にする。
-    """
-    items, skipped = [], []
+    """名前,幅,奥行,高さ[,重さkg] のCSVを読む。(候補, 読めなかった行) を返す。"""
     with open(path, newline="", encoding="utf-8-sig") as f:
-        for i, rec in enumerate(csv.reader(f)):
-            if not any(x.strip() for x in rec):
-                continue
-            try:
-                item = (rec[0], float(rec[1]), float(rec[2]), float(rec[3]))
-                if len(rec) > 4 and rec[4].strip():
-                    item += (float(rec[4]),)
-                items.append(item)
-            except (ValueError, IndexError):
-                if i > 0:
-                    skipped.append(",".join(rec))
-    return items, skipped
+        return parse_rows(csv.reader(f))
+
+
+def parse_text(text):
+    """1行1候補の文字列(画面の入力欄)を読む。見出しは無いものとして扱う。"""
+    return parse_rows(csv.reader(text.replace("、", ",").replace("，", ",").splitlines()), header=False)
+
+
+def size_error(item):
+    """候補の寸法・重さが正の有限の数でなければ、その理由を返す(よければ None)。"""
+    name, *size = item
+    if not all(np.isfinite(size)) or min(size) <= 0:
+        return f"{name}: 寸法と重さは正の数(cm、kg)で指定する"
+    return None
 
 
 def build_space(args, parser):
@@ -453,9 +483,9 @@ def main():
             print(f"警告: CSVのこの行は読めなかったので飛ばします: {line}")
     if not items:
         parser.error("候補が無い(--item か --csv で指定する)")
-    for name, *size in items:
-        if not all(np.isfinite(size)) or min(size) <= 0:
-            parser.error(f"{name}: 寸法と重さは正の数(cm、kg)で指定する")
+    for item in items:
+        if size_error(item):
+            parser.error(size_error(item))
 
     space = build_space(args, parser)
     print(f"経路の長さ {space.centerline.s_total:.0f}cm、運ぶ人 {args.carriers}人、"

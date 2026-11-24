@@ -39,9 +39,14 @@
    - `route_env.py`: 検証用の合成経路（玄関・廊下・曲がり角・ドア）。`python route_env.py` で正解と突き合わせ
    - 使い方: `sp = ScanSpace(mesh, 自由空間の1点); sp.build_centerline(出発点, 目的地); scan_plan.sweep_capacity(sp, num_carriers=2)`
      （ScanSpaceはオラクルの `outer` にそのまま渡せる。obstacles=None、floor_fn=sp.floor_fn）
-   - `scan_picker.py`: **ブラウザで床に出発点・目的地を置いて判定する画面**。
-     `python scan_picker.py <スキャン.obj または Scaniverse の zip>` → http://localhost:8001。
+   - `scan_picker.py`: **ブラウザで床に出発点・目的地を置き、家具の候補をまとめて判定する画面**（2026-11-24 に一括判定を組み込んだ）。
+     `python scan_picker.py <スキャン.obj または Scaniverse の zip>` → http://localhost:8001（`--route` で検証用の合成経路）。
      空間は判定のときに出発点の上を起点にして作る（約1分、以後は使い回す）
+     - 流れ: 床をクリックして出発点・目的地を置く → 入力欄に候補を1行1件で書く（`名前, 幅, 奥行, 高さ, 重さ`。重さは省ける）→「判定する」→ 候補ごとの ○/△/× と理由の表 → 行の「3Dで見る」で一番狭い所の様子
+     - 判定と文言は `scan_candidates.py` と同じもの（`judge_candidates`、`row_parts`）。1件あたり十数秒〜1分かかり、終わった候補から表に出る。候補は12件まで
+     - 読めない行が1つでもあれば判定しない（候補が黙って減らないように）
+     - 「3Dで見る」は、その候補を表と同じ向き・重さで判定し直して作る（十数秒〜1分）。水平でも持てない重さの候補には出ない
+     - 判定は1件ずつ直列に動く（家具の寸法をモジュールの変数で差し替えているため）
    - `scan_viewer.py`: 判定結果の3D（中心線を余裕で色分け、一番狭い所の家具と人を赤く、当たった点に印）
 
 8. **重さの判定**（2026-10-13）: `python stair_report.py --furniture 80 45 60 --weight 70 --quick`
