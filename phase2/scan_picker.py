@@ -24,6 +24,7 @@
 """
 
 import argparse
+import atexit
 import json
 import shutil
 import tempfile
@@ -55,6 +56,26 @@ VIEW_TYPES = {".obj": "text/plain", ".mtl": "text/plain", ".jpg": "image/jpeg",
 VENDOR_TYPES = {".js": "application/javascript"}
 
 
+def plain_name(name):
+    """フォルダの直下に置いてよい、ただのファイル名なら返す(そうでなければ None)。
+
+    最後の「/」より後ろを取り、ドライブ指定や区切りが残る名前は断る。Windows
+    では folder / "D:x.obj" が別のドライブを指すので、名前だけを取っても
+    フォルダの外に出られてしまう。
+    """
+    base = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+    if base in ("", ".", "..") or ":" in base:
+        return None
+    return base
+
+
+def temp_dir():
+    """終了時に消す一時フォルダを作る(展開したスキャンを残さない)。"""
+    out = Path(tempfile.mkdtemp(prefix="odoriba_scan_"))
+    atexit.register(shutil.rmtree, out, ignore_errors=True)
+    return out
+
+
 def view_of_scan(path, to_zup):
     """スキャンの元ファイルを、立体表示に渡せる形にする。
 
@@ -62,38 +83,45 @@ def view_of_scan(path, to_zup):
     中の OBJ・MTL・写真を一時フォルダに出す。OBJ を直接渡されたときは、同じ
     フォルダの MTL・写真をそのまま配る。to_zup は、元のファイルの座標を判定側の
     座標(上がZ・cm)に直す行列(scan_ingest.load_scan_zup の info["to_zup"])。
+    OBJ でないもの(PLY など)は None を返す(呼び出し側で、読み込んだ形だけを出す)。
     """
     path = Path(path)
     if path.suffix.lower() == ".zip":
         import zipfile
-        out = Path(tempfile.mkdtemp(prefix="odoriba_scan_"))
         with zipfile.ZipFile(path) as z:
+            # 判定側(scan_ingest.load_mesh)は、中の最初の .obj/.ply を読む。同じものを出す
+            meshes = [n for n in z.namelist() if n.lower().endswith((".obj", ".ply"))]
+            first = plain_name(meshes[0]) if meshes else None
+            if first is None or not first.lower().endswith(".obj"):
+                return None
+            out = temp_dir()
             for name in z.namelist():
-                if Path(name).suffix.lower() in VIEW_TYPES:
-                    with z.open(name) as src, open(out / Path(name).name, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-        objs = sorted(f.name for f in out.iterdir() if f.suffix.lower() == ".obj")
-        if not objs:
-            raise ValueError(f"zipの中にOBJがない(立体表示はOBJだけ対応): {path}")
-        return {"dir": out, "file": objs[0], "to_zup": to_zup}
+                base = plain_name(name)
+                if base is None or Path(base).suffix.lower() not in VIEW_TYPES:
+                    continue
+                if base.lower().endswith(".obj") and name != meshes[0]:
+                    continue
+                with z.open(name) as src, open(out / base, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        return {"dir": out, "file": first, "to_zup": to_zup}
     if path.suffix.lower() != ".obj":
-        raise ValueError(f"立体表示はOBJ(またはそのzip)だけ対応: {path}")
+        return None
     return {"dir": path.resolve().parent, "file": path.name, "to_zup": to_zup}
 
 
 def view_of_mesh(mesh):
     """判定側の座標(上がZ・cm)のメッシュを、立体表示に渡せる形にする。
 
-    写真の無い合成経路用。立体表示は上がYなので、X軸まわりに-90度回して
+    写真の無い合成経路や、OBJ でないスキャン(PLY など)用。立体表示は上がYなので、X軸まわりに-90度回して
     書き出し、行列で元に戻す。
     """
     import trimesh
     back = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
     m = mesh.copy()
     m.apply_transform(np.linalg.inv(back))
-    out = Path(tempfile.mkdtemp(prefix="odoriba_scan_"))
-    m.export(out / "route.obj", include_normals=True)
-    return {"dir": out, "file": "route.obj", "to_zup": back.tolist()}
+    out = temp_dir()
+    m.export(out / "scan.obj", include_normals=True)
+    return {"dir": out, "file": "scan.obj", "to_zup": back.tolist()}
 
 
 # 1件ずつ掃引するので、候補が多いと待ち時間が長くなる
@@ -294,7 +322,6 @@ PAGE = """<!doctype html>
  #notes { display: none; }
  #view { width: 100%; height: 600px; border: 1px solid #ccc; outline: none; touch-action: none; display: block; }
  #cut { width: 320px; vertical-align: middle; }
- .pin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
 </style></head><body>
 <h2>1. 出発点と目的地のピンを床に立てる</h2>
 <div class="row">
@@ -347,7 +374,7 @@ function showPlaced(msg) {
   document.getElementById('placed').textContent = (msg ? msg + ' / ' : '') + where.join(' / ');
 }
 function putPin(k, p) {
-  if (pins[k]) pins[k].dispose();
+  if (pins[k]) pins[k].dispose(false, true);   // 材質も一緒に消す(置き直すたびに溜めない)
   const h = 60 / unit, r = 9 / unit;   // ピンの長さ60cm・頭の半径9cmを、ファイルの単位にする
   const mat = new BABYLON.StandardMaterial('pin-' + k, scene);
   mat.emissiveColor = BABYLON.Color3.FromHexString(PIN_COLORS[k]);
@@ -453,15 +480,17 @@ async function startView() {
     max = max ? BABYLON.Vector3.Maximize(max, b.maximumWorld) : b.maximumWorld.clone();
   }
   bounds = {min, max};
-  faceSign = findFaceSign(meshes);
+  // 部屋の内側を向いた面だけ描く。外から見ると、手前の壁や天井が透けて中が見える
+  // (サンドボックスと同じ見え方)。この設定(右手系)で読み込むと、ふつうのスキャン
+  // (面が撮った人の側を向く)は、頂点の並びから出した向きが内側と逆(符号 -1)になり、
+  // そのまま内側の面が描かれる。符号が逆のファイル(面が外を向いている)は、面を
+  // 裏返して同じ形にそろえる(描く面と、クリックで当たる面を食い違わせない)
+  if (findFaceSign(meshes) > 0) for (const m of meshes) m.flipFaces(false);
+  faceSign = -1;
   for (const m of meshes) {
     if (!m.material) m.material = new BABYLON.StandardMaterial('scan', scene);
     const mat = m.material;
-    // 部屋の内側を向いた面だけ描く。外から見ると、手前の壁や天井が透けて中が見える
-    // (サンドボックスと同じ見え方)。この設定(右手系)では、頂点の並びから出した
-    // 向きが奥を向く面が描かれる。内側を向く符号が逆のファイルでは、描く側も逆にする
     mat.backFaceCulling = true;
-    if (faceSign > 0) mat.sideOrientation = BABYLON.Material.CounterClockWiseSideOrientation;
     if (mat.diffuseTexture) {       // 写真つきなら、照明をかけずに写真の色のまま出す
       mat.emissiveTexture = mat.diffuseTexture;
       mat.disableLighting = true;
@@ -613,8 +642,9 @@ def make_handler(app):
 
         def _file(self, folder, url_path, types):
             """folder の直下にある、決めた種類のファイルだけを配る。"""
-            f = Path(folder) / Path(unquote(url_path)).name
-            ctype = types.get(f.suffix.lower())
+            name = plain_name(unquote(url_path))
+            f = Path(folder) / name if name else None
+            ctype = types.get(f.suffix.lower()) if f else None
             if ctype is None or not f.is_file():
                 self.send_error(404)
                 return
@@ -714,6 +744,9 @@ def main():
         import scan_ingest as SI
         mesh, info = SI.load_scan_zup(args.mesh)
         view = view_of_scan(args.mesh, info["to_zup"])
+        if view is None:
+            print("[picker] OBJ ではないので、写真なしの形だけを表示します")
+            view = view_of_mesh(mesh)
     else:
         parser.error("mesh を指定する(または --route)")
     if fetch_viewer.missing():
