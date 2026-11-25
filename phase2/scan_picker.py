@@ -15,8 +15,9 @@
 実際の家と見比べる手がかりが無く、使えなかった(decisions.md 2026-11-24)。
 候補(名前, 幅, 奥行, 高さ, 分かれば重さ)を1行に1件ずつ書いて「判定する」を押すと、裏で掃引(1件あたり十数秒〜1分)を
 回して、候補ごとの ○/△/× と理由を表で出す(scan_candidates と同じ判定)。
-表の「3Dで見る」を押すと、その候補が一番狭い所でどう詰まるかを3D
-(scan_viewer)で表示する。
+表の「立体で見る」を押すと、同じ立体表示の中に、経路の線・一番狭い所での家具と
+運ぶ人・当たる所の印を重ね、そこへ視点を寄せる(scan_scene)。経路上の位置を
+動かして、家具が運ばれていく様子も見られる。
 
 計算は時間がかかるので、要求を受けたらすぐ返し(ジョブ番号)、ブラウザが
 進み具合を問い合わせる形にしている(同期APIにしない、という方針どおり)。
@@ -37,18 +38,15 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
 import numpy as np
-import plotly
 
 import fetch_viewer
 import phase2_lstair as L
 import scan_candidates as SC
 import scan_plan as SP
+import scan_scene as SCN
 import scan_space as SS
-import scan_viewer as SV
 
 PORT = 8001
-PLOTLY_JS = Path(plotly.__file__).parent / "package_data" / "plotly.min.js"
-OUT_DIR = Path(tempfile.mkdtemp(prefix="odoriba_picker_"))
 
 # 立体表示に渡すファイルの種類(スキャンの形・材質・写真)
 VIEW_TYPES = {".obj": "text/plain", ".mtl": "text/plain", ".jpg": "image/jpeg",
@@ -164,6 +162,11 @@ def can_view(row):
     return row["verdict"] != "unknown" and not row.get("too_heavy_flat")
 
 
+def margin_text(cm):
+    """余裕(cm)を「余裕◯cm / あと◯cm足りない」の言葉にする。"""
+    return f"余裕{cm:.0f}cm" if cm >= 0 else f"あと{-cm:.0f}cm足りない"
+
+
 def shown_row(row):
     """1件の結果を、画面の表に出す形にする(文言は scan_candidates のもの)。"""
     return dict(SC.row_parts(row), verdict=row["verdict"], can_view=can_view(row))
@@ -262,12 +265,13 @@ class App:
             self.jobs[job] = {"state": "error", "message": str(e)}
 
     def submit_view(self, judged_job, index):
-        """判定済みの候補1件の3Dを作るジョブを始める。(ジョブ番号, エラー文) を返す。"""
+        """判定済みの候補1件を立体表示に重ねる形にするジョブを始める。
+        (ジョブ番号, エラー文) を返す。"""
         res = self.results.get(judged_job)
         if res is None or not isinstance(index, int) or not 0 <= index < len(res["rows"]):
             return None, "その候補は見つかりません(もう一度判定してください)"
         if not can_view(res["rows"][index]):
-            return None, "この候補は3Dで見せられません"
+            return None, "この候補は立体で見せられません"
         job = uuid.uuid4().hex[:8]
         self.jobs[job] = {"state": "running", "message": "順番を待っています..."}
         threading.Thread(target=self._run_view, args=(job, res, res["rows"][index]),
@@ -280,8 +284,7 @@ class App:
             with self.lock:
                 space = self._ensure_route(job, res["start"], res["goal"])
                 self.jobs[job] = {"state": "running",
-                                  "message": "3Dを作っています(十数秒〜1分)..."}
-                out = OUT_DIR / f"{job}.html"
+                                  "message": "立体表示を作っています(十数秒〜1分)..."}
                 # 表と同じ向き・同じ重さで判定し直す(一括判定は姿勢を残していない)
                 with SC.furniture_dims(a, b, up), \
                         SC.carried_weight(row.get("weight_kg"), res["carried_by"]):
@@ -289,11 +292,12 @@ class App:
                     # 表より少し甘い値が出る。表と同じ傾きの格子で判定する
                     result = SP.judge(space, num_carriers=self.num_carriers, rrt=False,
                                       tilt_detail=True, log=lambda *_: None)
-                    SV.render_html(space, self.mesh, result, str(out),
-                                   num_carriers=self.num_carriers,
-                                   include_plotlyjs="/plotly.min.js",
-                                   title=f"{row['name']} {SC.row_parts(row)['size']}")
-            self.jobs[job] = {"state": "done", "url": f"/result/{job}.html"}
+                    scene = SCN.result_scene(space, result, self.num_carriers,
+                                             np.linalg.inv(np.array(self.view["to_zup"])))
+            parts = SC.row_parts(row)
+            scene.update(name=row["name"], size=parts["size"], reason=parts["reason"],
+                         furniture_only=margin_text(scene["furniture_only_cm"]))
+            self.jobs[job] = {"state": "done", "scene": scene}
         except Exception as e:
             traceback.print_exc()
             self.jobs[job] = {"state": "error", "message": str(e)}
@@ -308,7 +312,6 @@ PAGE = """<!doctype html>
  button { font-size: 15px; padding: 6px 14px; margin-right: 6px; }
  button.on { background: #2c6fbb; color: white; }
  #status { margin: 10px 0; font-weight: bold; }
- #result { width: 100%; height: 760px; border: 1px solid #ccc; display: none; }
  .note { color: #666; font-size: 13px; }
  .row { margin: 8px 0; }
  textarea { width: 420px; height: 110px; font-size: 14px; vertical-align: top; }
@@ -321,6 +324,13 @@ PAGE = """<!doctype html>
  tr.ng td.mark { color: #c0392b; } tr.unknown td.mark { color: #888; }
  #notes { display: none; }
  #view { width: 100%; height: 600px; border: 1px solid #ccc; outline: none; touch-action: none; display: block; }
+ #stage { position: relative; overflow: hidden; }
+ #tag { position: absolute; display: none; transform: translate(-50%, -140%); pointer-events: none;
+        background: rgba(255,255,255,0.93); border: 2px solid #c0392b; border-radius: 6px;
+        padding: 4px 10px; font-weight: bold; font-size: 15px; white-space: nowrap; }
+ #tag.ok { border-color: #27ae60; }
+ #play { display: none; background: #f6f8fa; border: 1px solid #ccc; padding: 8px 10px; }
+ #pos { width: 420px; vertical-align: middle; }
  #cut { width: 320px; vertical-align: middle; }
 </style></head><body>
 <h2>1. 出発点と目的地のピンを床に立てる</h2>
@@ -329,7 +339,18 @@ PAGE = """<!doctype html>
  <button id="mGoal" onclick="setMode('goal')">■ 目的地を置く</button>
 </div>
 <div class="note" id="info"></div>
-<canvas id="view"></canvas>
+<div id="stage"><canvas id="view"></canvas><div id="tag"></div></div>
+<div class="row" id="play">
+ <div id="headline" style="font-weight: bold"></div>
+ <div class="row">
+  <button id="playBtn" onclick="togglePlay()">▶ 運んでみる</button>
+  <button onclick="goWorst()">一番狭い所へ</button>
+  <input id="pos" type="range" min="0" max="0" value="0">
+  <span id="posText"></span>
+  <button onclick="clearResult()">重ねた結果を消す</button>
+ </div>
+ <div class="note">線の色: 緑=余裕あり / 黄=5cm未満 / 赤=足りない / 紫=持てる姿勢が無い。家具と人は、各位置で試した中で一番余裕のある姿勢。位置と位置の間の動かし方(回す途中で引っかからないか)は確かめていない</div>
+</div>
 <div class="row">この高さから上を隠す: <input id="cut" type="range" min="0" max="1000" value="1000">
  <span class="note" id="cutText">隠していない</span>
  <span class="note">(2階の床で1階が見えないときに下げる)</span>
@@ -346,11 +367,11 @@ PAGE = """<!doctype html>
 <div id="status"></div>
 <table id="rows"></table>
 <div id="viewStatus" class="row"></div>
-<iframe id="result"></iframe>
 <div class="note" id="notes"></div>
 <script>
 let F = null, mode = 'start', pts = {start: null, goal: null};
-let scene = null, bounds = null, unit = 1, pins = {start: null, goal: null};
+let scene = null, engine = null, cam = null, bounds = null, unit = 1, pins = {start: null, goal: null};
+let R = null;       // 重ねて表示している結果(無ければ null)
 let faceSign = 1;   // 面の頂点の並びから出した向きに掛けて、「部屋の内側を向く向き」にする符号
 const NAMES = {start: '出発点', goal: '目的地'};
 const PIN_COLORS = {start: '#27ae60', goal: '#c0392b'};
@@ -454,7 +475,7 @@ async function startView() {
     return;
   }
   const canvas = document.getElementById('view');
-  const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer: true});
+  engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer: true});
   scene = new BABYLON.Scene(engine);
   scene.useRightHandedSystem = true;   // ファイルの座標をそのまま使う(左右を反転させない)
   scene.clearColor = new BABYLON.Color4(0.95, 0.95, 0.95, 1);
@@ -502,7 +523,7 @@ async function startView() {
   }
   unit = Math.hypot(F.to_zup[0][0], F.to_zup[1][0], F.to_zup[2][0]);   // ファイルの1単位が何cmか
   const center = min.add(max).scale(0.5), size = max.subtract(min).length();
-  const cam = new BABYLON.ArcRotateCamera('cam', -Math.PI / 3, Math.PI / 3.2, size * 1.1, center, scene);
+  cam = new BABYLON.ArcRotateCamera('cam', -Math.PI / 3, Math.PI / 3.2, size * 1.1, center, scene);
   cam.minZ = size / 2000; cam.maxZ = size * 20;
   cam.lowerRadiusLimit = size / 200; cam.upperRadiusLimit = size * 5;
   cam.wheelDeltaPercentage = 0.03;
@@ -513,11 +534,139 @@ async function startView() {
     if (pi.type === BABYLON.PointerEventTypes.POINTERTAP && pi.event.button === 0) onTap(scene.pointerX, scene.pointerY);
   });
   document.getElementById('cut').oninput = setCut;
-  engine.runRenderLoop(() => scene.render());
+  engine.runRenderLoop(() => { scene.render(); placeTag(); });
+  document.getElementById('pos').oninput = ev => { stopPlay(); showFrame(+ev.target.value); };
   window.addEventListener('resize', () => engine.resize());
   info.textContent = '運ぶ人 ' + F.carriers + '人 / 左ドラッグで回す、右ドラッグで動かす、ホイールで寄る・引く。床をクリックするとピンが立つ' +
     ' (読み込み ' + ((Date.now() - t0) / 1000).toFixed(1) + '秒)';
   showPlaced();
+}
+// ---- 判定の結果を、同じ立体表示に重ねる ----
+const C3 = hex => BABYLON.Color3.FromHexString(hex);
+function plainMat(name, hex, lit) {
+  const mat = new BABYLON.StandardMaterial(name, scene);
+  if (lit) { mat.diffuseColor = C3(hex); mat.specularColor = new BABYLON.Color3(0, 0, 0); mat.twoSidedLighting = true; }
+  else { mat.emissiveColor = C3(hex); mat.disableLighting = true; }
+  mat.backFaceCulling = false;
+  return mat;
+}
+// 頂点の並び(x, y, z, ...)と三角形から、後で頂点を差し替えられる部品を作る
+function rawMesh(name, positions, indices, hex) {
+  const m = new BABYLON.Mesh(name, scene), vd = new BABYLON.VertexData(), normals = [];
+  BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+  vd.positions = positions; vd.indices = indices; vd.normals = normals;
+  vd.applyToMesh(m, true);
+  m.material = plainMat(name, hex, true);
+  m.isPickable = false;
+  m.alwaysSelectAsActiveMesh = true;   // 頂点を差し替えるので、古い範囲で描画を省かせない
+  return m;
+}
+function setVerts(m, positions, indices) {
+  const normals = [];
+  BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+  m.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+  m.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals);
+}
+const V3 = (a, i) => new BABYLON.Vector3(a[i || 0], a[(i || 0) + 1], a[(i || 0) + 2]);
+function lineColor(c) { return c === null ? '#8e44ad' : c < 0 ? '#c0392b' : c < 5 ? '#f1c40f' : '#27ae60'; }
+function clearResult() {
+  stopPlay();
+  if (R) for (const m of R.meshes) m.dispose(false, true);
+  R = null;
+  document.getElementById('tag').style.display = 'none';
+  document.getElementById('play').style.display = 'none';
+}
+function showResult(d) {
+  clearResult();
+  const meshes = [], fr = d.frames, w = d.bottleneck.frame;
+  // 経路の線: 位置と位置の間を、両端の余裕の小さい方の色で塗る。壁の向こうでも見えるよう最後に描く
+  for (let i = 0; i + 1 < fr.length; i++) {
+    const a = fr[i].clearance, b = fr[i + 1].clearance;
+    const t = BABYLON.MeshBuilder.CreateTube('seg', {path: [V3(fr[i].at), V3(fr[i + 1].at)], radius: 2.5 / unit, tessellation: 6}, scene);
+    t.material = plainMat('seg', lineColor(a === null || b === null ? null : Math.min(a, b)), false);
+    t.isPickable = false; t.renderingGroupId = 1;
+    meshes.push(t);
+  }
+  const box = rawMesh('furniture', fr[w].box, d.box_tris, '#2c6fbb');
+  const people = fr[w].people.map((v, k) => rawMesh('carrier' + k, v, d.people_tris, '#e07b39'));
+  meshes.push(box, ...people);
+  // 当たる所(一番余裕の小さい点)の印
+  const ok = d.bottleneck.capacity_cm >= 0;
+  const mark = BABYLON.MeshBuilder.CreateSphere('mark', {diameter: 12 / unit}, scene);
+  mark.material = plainMat('mark', ok ? '#27ae60' : '#c0392b', false);
+  mark.position = V3(d.bottleneck.contact);
+  mark.isPickable = false; mark.renderingGroupId = 1;
+  meshes.push(mark);
+  R = {d, meshes, box, people, mark, frame: -1, timer: null};
+  const tag = document.getElementById('tag');
+  tag.textContent = d.reason.split('(')[0];
+  tag.className = ok ? 'ok' : '';
+  document.getElementById('headline').textContent = d.name + ' ' + d.size + ': ' + d.reason +
+    ' / 家具だけなら' + d.furniture_only;
+  const pos = document.getElementById('pos');
+  pos.max = fr.length - 1;
+  document.getElementById('play').style.display = 'block';
+  goWorst();
+}
+function showFrame(i) {
+  if (!R) return;
+  const d = R.d, f = d.frames[i];
+  R.frame = i;
+  document.getElementById('pos').value = i;
+  const has = f.box !== null, ng = has && f.clearance < 0;
+  R.box.setEnabled(has);
+  R.people.forEach(m => m.setEnabled(has));
+  if (has) {
+    setVerts(R.box, f.box, d.box_tris);
+    R.box.material.diffuseColor = C3(ng ? '#c0392b' : '#2c6fbb');
+    R.people.forEach((m, k) => { setVerts(m, f.people[k], d.people_tris); m.material.diffuseColor = C3(ng ? '#c0392b' : '#e07b39'); });
+  }
+  const where = '出発点から ' + (f.s / 100).toFixed(1) + 'm / ' + (d.length / 100).toFixed(1) + 'm: ';
+  document.getElementById('posText').textContent = where + (!has ? '持てる姿勢が無い' :
+    ng ? 'あと' + Math.round(-f.clearance) + 'cm足りない' : '余裕' + Math.round(f.clearance) + 'cm') +
+    (i === d.bottleneck.frame ? ' (一番狭い所)' : '');
+}
+// 一番狭い所を表示し、そこへ視点を寄せる。上の階の床で隠れないよう、その上を隠す
+function goWorst() {
+  if (!R) return;
+  stopPlay();
+  const d = R.d, w = d.bottleneck.frame;
+  showFrame(w);
+  const s = document.getElementById('cut');
+  const top = d.frames[w].at[1] + 240 / unit;
+  if (top < bounds.max.y) { s.value = Math.ceil(s.max * (top - bounds.min.y) / (bounds.max.y - bounds.min.y)); setCut(); }
+  cam.setTarget(V3(d.bottleneck.contact));
+  cam.radius = 420 / unit;
+  cam.beta = Math.min(cam.beta, 1.05);
+  document.getElementById('view').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+function stopPlay() {
+  if (R && R.timer) { clearInterval(R.timer); R.timer = null; }
+  document.getElementById('playBtn').textContent = '▶ 運んでみる';
+}
+function togglePlay() {
+  if (!R) return;
+  if (R.timer) { stopPlay(); return; }
+  const n = R.d.frames.length;
+  let i = R.frame >= n - 1 ? 0 : R.frame;
+  document.getElementById('playBtn').textContent = '■ 止める';
+  R.timer = setInterval(() => {
+    showFrame(i);
+    cam.setTarget(BABYLON.Vector3.Lerp(cam.target, V3(R.d.frames[i].at), 0.5));
+    if (++i >= n) stopPlay();
+  }, 220);
+}
+// 当たる所の印の上に、足りない量の札を出す(印が画面の外・カメラの後ろなら隠す)
+function placeTag() {
+  const tag = document.getElementById('tag');
+  if (!R) return;
+  const w = engine.getRenderWidth(), h = engine.getRenderHeight();
+  const p = BABYLON.Vector3.Project(R.mark.position, BABYLON.Matrix.Identity(), scene.getTransformMatrix(), cam.viewport.toGlobal(w, h));
+  const canvas = document.getElementById('view');
+  if (p.z < 0 || p.z > 1 || p.x < 0 || p.x > w || p.y < 0 || p.y > h) { tag.style.display = 'none'; return; }
+  tag.style.display = 'block';
+  tag.style.left = (p.x * canvas.clientWidth / w) + 'px';
+  tag.style.top = (p.y * canvas.clientHeight / h) + 'px';
 }
 function el(tag, text, cls) {
   const e = document.createElement(tag);
@@ -550,7 +699,7 @@ function showRows(rows, done) {
     tr.appendChild(el('td', r.extras.join(' / ')));
     const td = el('td');
     if (done && r.can_view) {
-      const b = el('button', '3Dで見る');
+      const b = el('button', '立体で見る');
       b.onclick = () => view(i, r.name);
       td.appendChild(b);
     }
@@ -561,8 +710,6 @@ function showRows(rows, done) {
 async function view(i, name) {
   if (busy) { viewStatus('計算中です。終わってから押してください'); return; }
   busy = true;
-  const fr = document.getElementById('result');
-  fr.style.display = 'none';
   const lost = () => { busy = false; viewStatus(LOST); };
   const r = await ask('/view', {job: judged, index: i});
   if (!r) { lost(); return; }
@@ -573,9 +720,9 @@ async function view(i, name) {
     if (!s) { lost(); return; }
     if (s.state === 'running') { viewStatus(name + ': ' + s.message + ' ' + Math.round((Date.now() - t0) / 1000) + '秒'); setTimeout(poll, 1000); return; }
     busy = false;
-    if (s.state === 'error') { viewStatus(name + ': 3Dを作れませんでした: ' + s.message); return; }
-    viewStatus(name + ': 一番狭い所での様子(左=家具だけ、右=人が運ぶ)');
-    fr.src = s.url; fr.style.display = 'block';
+    if (s.state === 'error') { viewStatus(name + ': 立体表示を作れませんでした: ' + s.message); return; }
+    viewStatus('');
+    showResult(s.scene);
   };
   poll();
 }
@@ -587,7 +734,7 @@ async function judge() {
   viewStatus('');
   showRows([]);
   document.getElementById('notes').style.display = 'none';
-  document.getElementById('result').style.display = 'none';
+  clearResult();
   const body = {start: pts.start, goal: pts.goal, items: document.getElementById('items').value,
     carried_by: document.getElementById('by').value};
   const r = await ask('/judge', body);
@@ -663,8 +810,6 @@ def make_handler(app):
             u = urlparse(self.path)
             if u.path == "/":
                 self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif u.path == "/plotly.min.js":
-                self._send(PLOTLY_JS.read_bytes(), "application/javascript")
             elif u.path.startswith("/vendor/"):
                 self._file(fetch_viewer.VENDOR_DIR, u.path, VENDOR_TYPES)
             elif u.path.startswith("/scan/"):
@@ -674,12 +819,6 @@ def make_handler(app):
             elif u.path == "/status":
                 job = parse_qs(u.query).get("job", [""])[0]
                 self._json(app.jobs.get(job, {"state": "error", "message": "不明なジョブ"}))
-            elif u.path.startswith("/result/") and u.path.endswith(".html"):
-                f = OUT_DIR / Path(u.path).name
-                if f.exists():
-                    self._send(f.read_bytes(), "text/html; charset=utf-8")
-                else:
-                    self.send_error(404)
             else:
                 self.send_error(404)
 
