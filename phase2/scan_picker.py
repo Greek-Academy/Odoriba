@@ -345,11 +345,11 @@ PAGE = """<!doctype html>
  <div class="row">
   <button id="playBtn" onclick="togglePlay()">▶ 運んでみる</button>
   <button onclick="goWorst()">一番狭い所へ</button>
-  <input id="pos" type="range" min="0" max="0" value="0">
+  <input id="pos" type="range" min="0" max="0" step="0.02" value="0">
   <span id="posText"></span>
   <button onclick="clearResult()">重ねた結果を消す</button>
  </div>
- <div class="note">線の色: 緑=余裕あり / 黄=5cm未満 / 赤=足りない / 紫=持てる姿勢が無い。家具と人は、各位置で試した中で一番余裕のある姿勢。位置と位置の間の動かし方(回す途中で引っかからないか)は確かめていない</div>
+ <div class="note">線の色: 緑=余裕あり / 黄=5cm未満 / 赤=足りない / 紫=持てる姿勢が無い。家具と人は、各位置で試した中で一番余裕のある姿勢。位置(15cmごと)の間は、動きが見やすいよう形をなめらかにつないでいるだけで、その途中で引っかからないかは確かめていない</div>
 </div>
 <div class="row">この高さから上を隠す: <input id="cut" type="range" min="0" max="1000" value="1000">
  <span class="note" id="cutText">隠していない</span>
@@ -534,8 +534,8 @@ async function startView() {
     if (pi.type === BABYLON.PointerEventTypes.POINTERTAP && pi.event.button === 0) onTap(scene.pointerX, scene.pointerY);
   });
   document.getElementById('cut').oninput = setCut;
-  engine.runRenderLoop(() => { scene.render(); placeTag(); });
-  document.getElementById('pos').oninput = ev => { stopPlay(); showFrame(+ev.target.value); };
+  engine.runRenderLoop(() => { stepPlay(); scene.render(); placeTag(); });
+  document.getElementById('pos').oninput = ev => { stopPlay(); showAt(+ev.target.value); follow(1); };
   window.addEventListener('resize', () => engine.resize());
   info.textContent = '運ぶ人 ' + F.carriers + '人 / 左ドラッグで回す、右ドラッグで動かす、ホイールで寄る・引く。床をクリックするとピンが立つ' +
     ' (読み込み ' + ((Date.now() - t0) / 1000).toFixed(1) + '秒)';
@@ -597,7 +597,7 @@ function showResult(d) {
   mark.position = V3(d.bottleneck.contact);
   mark.isPickable = false; mark.renderingGroupId = 1;
   meshes.push(mark);
-  R = {d, meshes, box, people, mark, frame: -1, timer: null};
+  R = {d, meshes, box, people, mark, t: w, playing: false};
   const tag = document.getElementById('tag');
   tag.textContent = d.reason.split('(')[0];
   tag.className = ok ? 'ok' : '';
@@ -608,30 +608,48 @@ function showResult(d) {
   document.getElementById('play').style.display = 'block';
   goWorst();
 }
-function showFrame(i) {
+// 2つの頂点の並びを、割合 u でつなぐ
+function mix(a, b, u) {
+  if (u <= 0) return a;
+  if (u >= 1) return b;
+  const out = new Array(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] + (b[i] - a[i]) * u;
+  return out;
+}
+// 経路上の位置 t(0〜位置の数-1。小数なら、前後の位置の間)の家具と人を表示する。
+// 判定したのは整数の位置だけ。間は、見やすいよう形をつないでいるだけ
+function showAt(t) {
   if (!R) return;
-  const d = R.d, f = d.frames[i];
-  R.frame = i;
-  document.getElementById('pos').value = i;
-  const has = f.box !== null, ng = has && f.clearance < 0;
+  const d = R.d, n = d.frames.length;
+  t = Math.max(0, Math.min(n - 1, t));
+  R.t = t;
+  document.getElementById('pos').value = t;
+  const i = Math.min(Math.floor(t), Math.max(n - 2, 0)), a = d.frames[i], b = d.frames[Math.min(i + 1, n - 1)];
+  let u = t - i;
+  // 片方に持てる姿勢が無いときは、つながずに近い方をそのまま出す
+  if (a.box === null || b.box === null) u = u < 0.5 ? 0 : 1;
+  const near = u < 0.5 ? a : b, has = near.box !== null;
+  const c = !has ? null : (u > 0 && u < 1) ? a.clearance + (b.clearance - a.clearance) * u : near.clearance;
+  const ng = has && c < 0;
   R.box.setEnabled(has);
   R.people.forEach(m => m.setEnabled(has));
   if (has) {
-    setVerts(R.box, f.box, d.box_tris);
+    setVerts(R.box, mix(a.box, b.box, u), d.box_tris);
     R.box.material.diffuseColor = C3(ng ? '#c0392b' : '#2c6fbb');
-    R.people.forEach((m, k) => { setVerts(m, f.people[k], d.people_tris); m.material.diffuseColor = C3(ng ? '#c0392b' : '#e07b39'); });
+    R.people.forEach((m, k) => { setVerts(m, mix(a.people[k], b.people[k], u), d.people_tris); m.material.diffuseColor = C3(ng ? '#c0392b' : '#e07b39'); });
   }
-  const where = '出発点から ' + (f.s / 100).toFixed(1) + 'm / ' + (d.length / 100).toFixed(1) + 'm: ';
+  const sCm = a.s + (b.s - a.s) * (t - i);
+  const where = '出発点から ' + (sCm / 100).toFixed(1) + 'm / ' + (d.length / 100).toFixed(1) + 'm: ';
   document.getElementById('posText').textContent = where + (!has ? '持てる姿勢が無い' :
-    ng ? 'あと' + Math.round(-f.clearance) + 'cm足りない' : '余裕' + Math.round(f.clearance) + 'cm') +
-    (i === d.bottleneck.frame ? ' (一番狭い所)' : '');
+    ng ? 'あと' + Math.max(1, Math.round(-c)) + 'cm足りない' : '余裕' + Math.round(c) + 'cm') +
+    (Math.abs(t - d.bottleneck.frame) < 0.01 ? ' (一番狭い所)' : '');
 }
 // 一番狭い所を表示し、そこへ視点を寄せる。上の階の床で隠れないよう、その上を隠す
 function goWorst() {
   if (!R) return;
   stopPlay();
   const d = R.d, w = d.bottleneck.frame;
-  showFrame(w);
+  showAt(w);
   const s = document.getElementById('cut');
   const top = d.frames[w].at[1] + 240 / unit;
   if (top < bounds.max.y) { s.value = Math.ceil(s.max * (top - bounds.min.y) / (bounds.max.y - bounds.min.y)); setCut(); }
@@ -641,20 +659,35 @@ function goWorst() {
   document.getElementById('view').scrollIntoView({behavior: 'smooth', block: 'center'});
 }
 function stopPlay() {
-  if (R && R.timer) { clearInterval(R.timer); R.timer = null; }
+  if (R) R.playing = false;
   document.getElementById('playBtn').textContent = '▶ 運んでみる';
 }
 function togglePlay() {
   if (!R) return;
-  if (R.timer) { stopPlay(); return; }
-  const n = R.d.frames.length;
-  let i = R.frame >= n - 1 ? 0 : R.frame;
+  if (R.playing) { stopPlay(); return; }
+  if (R.t >= R.d.frames.length - 1) showAt(0);
+  R.playing = true;
   document.getElementById('playBtn').textContent = '■ 止める';
-  R.timer = setInterval(() => {
-    showFrame(i);
-    cam.setTarget(BABYLON.Vector3.Lerp(cam.target, V3(R.d.frames[i].at), 0.5));
-    if (++i >= n) stopPlay();
-  }, 220);
+}
+const PLAY_SPEED = 60;   // 運んでいく速さ(cm/秒)
+// 描くたびに呼ぶ: 再生中なら、経った時間のぶんだけ位置を進め、視点を家具に付いていかせる
+function stepPlay() {
+  if (!R || !R.playing) return;
+  const d = R.d, n = d.frames.length;
+  if (n < 2) { stopPlay(); return; }
+  const i = Math.min(Math.floor(R.t), n - 2), ds = Math.max(1, d.frames[i + 1].s - d.frames[i].s);
+  const dt = Math.min(engine.getDeltaTime(), 100) / 1000;   // 画面が止まっていた後に飛ばない
+  const t = R.t + PLAY_SPEED * dt / ds;
+  showAt(t);
+  follow(Math.min(1, dt * 3));
+  if (t >= n - 1) stopPlay();
+}
+// 視点の中心を、いま表示している位置へ寄せる(rate=1 ならすぐ、小さければ少しずつ)
+function follow(rate) {
+  const fr = R.d.frames, j = Math.min(Math.floor(R.t), Math.max(fr.length - 2, 0));
+  const at = BABYLON.Vector3.Lerp(V3(fr[j].at), V3(fr[Math.min(j + 1, fr.length - 1)].at), R.t - j);
+  at.y += 60 / unit;   // 床ではなく、家具の高さのあたりを見る
+  cam.setTarget(BABYLON.Vector3.Lerp(cam.target, at, rate));
 }
 // 当たる所の印の上に、足りない量の札を出す(印が画面の外・カメラの後ろなら隠す)
 function placeTag() {
