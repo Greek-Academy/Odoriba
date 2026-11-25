@@ -324,7 +324,10 @@ def _bottleneck(space, sw, with_human, num_carriers, key, log):
     out = {"s": s_min, "capacity_cm": c_min,
            "xy": cl.xy_at(s_min).tolist(), "pose": pose_min,
            "contact": {"xyz": xyz.tolist(), "clearance_cm": c_pt, "part": what},
-           "profile": [[s, c] for s, c, _ in sw]}
+           "profile": [[s, c] for s, c, _ in sw],
+           # 各位置で一番余裕のあった姿勢(profile と同じ並び。無い位置は None)。
+           # 結果を立体表示に重ねるのに使う
+           "poses": [pose for _, _, pose in sw]}
     log(f"  {key}: s={s_min:.0f}cm 余裕{c_min:+.1f}cm "
         f"(一番厳しい点 {np.round(xyz, 0).tolist()} = {what})")
     # 持てる姿勢が1つも無い位置(余裕が -inf)は上の最小値に入らない。
